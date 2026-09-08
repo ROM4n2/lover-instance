@@ -1,0 +1,59 @@
+# === Secrets & Local Configs（与 bootstrap.ps1 $requiredIgnores 保持同步）===
+config.yaml
+config.yml
+config.local.yaml
+.env
+.env.*
+*.env
+*.secret
+*.pem
+*.key
+*.local.json
+credentials.json
+
+# === 微信聊天隐私数据（最高敏感，绝不可入库）===
+data/
+exports/
+raw/
+snapshots/
+reports/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*_messages.json
+*.report.html
+.chatlog/
+
+# === 模型权重 / 推理缓存（大文件，不入库）===
+models/
+*.onnx
+*.bin
+*.safetensors
+.hf-cache/
+.paddle/
+
+# === Python ===
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# === Node / 前端构建产物（dist 由 npm run build 生成，供 go:embed）===
+node_modules/
+frontend/dist/
+
+# === Go 构建产物 ===
+bin/
+*.exe
+*.exe~
+vendor/
+
+# === IDE / OS ===
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
