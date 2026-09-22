@@ -58,3 +58,6 @@ vendor/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# === vault-exec 执行状态（本地断点文件，非交付物） ===
+.vault-exec-ledger.json
