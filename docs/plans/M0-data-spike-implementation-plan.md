@@ -113,8 +113,9 @@ M0 不可全自动：装 sidecar、跑微信登录态、被动取密钥均需用
 ### Task 3: 微信/sidecar 探测 CLI [Role: TDD Builder]
 
 **Files:**
-- Create: `tools/wechat_probe/main.go`
-- Create: `tools/wechat_probe/probe_test.go`
+- Create: `backend-go/internal/probe/probe.go`
+- Create: `backend-go/internal/probe/probe_test.go`
+- Create: `backend-go/cmd/probe/main.go`
 
 **Interfaces:**
 - Produces:
@@ -132,10 +133,10 @@ M0 不可全自动：装 sidecar、跑微信登录态、被动取密钥均需用
 **Subagent Prompt Scaffold (for /vault-exec):**
 > "Implement Task 3: 微信/sidecar 探测 CLI。
 > Goal: 输出 JSON 状态的探测工具：扫微信 exe 候选路径、探测 sidecar :5030 的 6 态状态机、check port、调用 PowerShell 读 exe 版本（stub 接口保留）。
-> Target Files: Create `tools/wechat_probe/main.go` + Test `tools/wechat_probe/probe_test.go`。
+> Target Files: Create `backend-go/cmd/probe/main.go` + Test `backend-go/internal/probe/probe_test.go`（实现落 `backend-go/internal/probe`，与既有 module 同体——2026-09-22 reviewer 判定原 `tools/wechat_probe` 路径与 E2E 步骤 2 自相矛盾，已改正）。
 > TDD Steps:
 > 1. 失败测试（RED）：`FindWeChatPaths` 至少包含候选路径子串；`ProbeHTTP` 对不可达地址返回 6 态中的 failed 态；`CheckPortOpen` 对已知关闭端口返回 false（用 `127.0.0.1:1` 或随机未监听端口）；状态机每态输出含 hint 文案。
-> 2. `cd tools/wechat_probe && go test .` 验证失败。
+> 2. `cd backend-go && go test ./internal/probe/...` 验证失败。
 > 3. 实现使绿（GREEN）；PowerShell 版本读取用可注入的 cmd 接口。
 > 4. 卫语句扁平化；输出 JSON 用 `encoding/json`。
 > 5. 全绿后 `go run .` 输出实际探测 JSON（记录证据）。
@@ -212,7 +213,7 @@ M0 不可全自动：装 sidecar、跑微信登录态、被动取密钥均需用
 ## 端到端验证
 1. `python -m pytest fixtures/ -q` → fixture 绿。
 2. `cd backend-go && go test ./...` → model/probe 绿。
-3. `go run ./tools/wechat_probe` → 输出本机微信/sidecar 真实状态 JSON（含版本号）。
+3. `go run ./cmd/probe` → 输出本机微信/sidecar 真实状态 JSON（含版本号）。
 4. `workmem/grab_evidence.py` 实跑 → 三证据文件 + FINDINGS.md。
 5. `git status` 复查：`workmem/`、真实 payload、`*.db` 均未入库。
 
