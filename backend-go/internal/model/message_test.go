@@ -174,14 +174,57 @@ func TestDetectUniqueKey_FallsBackToExtraServerID(t *testing.T) {
 	}
 }
 
-func TestDetectUniqueKey_ConvertsRemainingExtraScalars(t *testing.T) {
-	raw := RawChatlogMessage{Extra: map[string]any{"id": "", "server_id": "", "nonce": 424242}}
+// TestDetectUniqueKey_FallsBackToSourceOffsetWhenServerIDEmpty covers the M0
+// measurement that forced source_offset into the frozen field list: 3 of 32624
+// real chatlog-keeper rows carry a null server_id, and every one of them still
+// has a source_offset. A row whose only identity is source_offset must key on
+// it rather than erroring out.
+func TestDetectUniqueKey_FallsBackToSourceOffsetWhenServerIDEmpty(t *testing.T) {
+	raw := RawChatlogMessage{Extra: map[string]any{"server_id": "", "source_offset": "wechat_export:1234"}}
 	got, err := DetectUniqueKey(raw)
 	if err != nil {
 		t.Fatalf("DetectUniqueKey() error: %v", err)
 	}
-	if got != "424242" {
-		t.Errorf("DetectUniqueKey() = %q, want %q from int scalar conversion", got, "424242")
+	if got != "wechat_export:1234" {
+		t.Errorf("DetectUniqueKey() = %q, want %q", got, "wechat_export:1234")
+	}
+}
+
+func TestDetectUniqueKey_PrefersServerIDOverSourceOffset(t *testing.T) {
+	raw := RawChatlogMessage{Extra: map[string]any{"server_id": "srv-9", "source_offset": "wechat_export:1234"}}
+	got, err := DetectUniqueKey(raw)
+	if err != nil {
+		t.Fatalf("DetectUniqueKey() error: %v", err)
+	}
+	if got != "srv-9" {
+		t.Errorf("DetectUniqueKey() = %q, want %q: server_id outranks source_offset", got, "srv-9")
+	}
+}
+
+// TestDetectUniqueKey_IgnoresUnlistedExtraScalars guards the defect M0 found in
+// the old alphabetical catch-all: an export carries account_id on every row and
+// thread_id on every row, so a sweep that picked the first non-empty scalar
+// would hand back an account-level constant and collapse distinct messages onto
+// a single key. Unlisted scalars must never become the key.
+func TestDetectUniqueKey_IgnoresUnlistedExtraScalars(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"account-level constant", map[string]any{"id": "", "server_id": "", "account_id": "wxid_same_for_everything"}},
+		{"conversation-level constant", map[string]any{"id": "", "server_id": "", "thread_id": "thread_same_for_everything"}},
+		{"unrelated scalar", map[string]any{"id": "", "server_id": "", "nonce": 424242}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DetectUniqueKey(RawChatlogMessage{Extra: tc.extra})
+			if err == nil {
+				t.Fatalf("DetectUniqueKey() = %q, want an error: unlisted Extra scalars must never become the message key", got)
+			}
+			if got != "" {
+				t.Errorf("DetectUniqueKey() = %q on error, want empty string", got)
+			}
+		})
 	}
 }
 

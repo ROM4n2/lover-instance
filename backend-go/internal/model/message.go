@@ -4,7 +4,6 @@ package model
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -94,9 +93,9 @@ func NormalizeTs(rawTs string) (int64, error) {
 }
 
 // DetectUniqueKey returns the first usable identity in priority order:
-// MsgSvrID, Extra["id"], Extra["server_id"], then the remaining non-empty
-// Extra scalar values. It errors when every candidate is empty because a
-// silent fallback to "" would collide distinct messages on one key.
+// MsgSvrID, then the Extra fields listed in uniqueKeyExtraFields. It errors
+// when every candidate is empty because a silent fallback to "" would collide
+// distinct messages on one key.
 func DetectUniqueKey(raw RawChatlogMessage) (string, error) {
 	for _, candidate := range uniqueKeyCandidates(raw) {
 		key := strings.TrimSpace(candidate)
@@ -108,31 +107,29 @@ func DetectUniqueKey(raw RawChatlogMessage) (string, error) {
 	return "", fmt.Errorf("seq %d has no unique key: MsgSvrID and Extra id fields are all empty", raw.Seq)
 }
 
-// uniqueKeyCandidates lists identity candidates in priority order.
-func uniqueKeyCandidates(raw RawChatlogMessage) []string {
-	candidates := []string{
-		raw.MsgSvrID,
-		scalarToString(raw.Extra["id"]),
-		scalarToString(raw.Extra["server_id"]),
-	}
-	return append(candidates, remainingExtraScalars(raw.Extra)...)
-}
+// uniqueKeyExtraFields is the ordered, evidence-frozen set of Extra fields that
+// may carry a message identity. M0 measured these against a chatlog-keeper
+// 0.3.7 export of 32624 real messages: `server_id` is the WeChat-native message
+// id (unique whenever present, null on 3 rows) and `source_offset` is the
+// exporter's own cursor (present and unique on every row), so source_offset is
+// the guaranteed non-null fallback behind server_id.
+//
+// Only listed fields are consulted. An alphabetical sweep over whatever scalars
+// happened to be in Extra used to run here as a catch-all, and it is unsafe:
+// any constant field — the export carries account_id on every row — would win
+// the sweep and silently collapse distinct messages onto one key. Adding a new
+// source means adding its measured identity field here, never guessing.
+var uniqueKeyExtraFields = []string{"id", "server_id", "source_offset"}
 
-// remainingExtraScalars returns the other Extra scalar values, sorted by key
-// so candidate order stays deterministic across runs (map order is random).
-func remainingExtraScalars(extra map[string]any) []string {
-	keys := make([]string, 0, len(extra))
-	for key := range extra {
-		if key != "id" && key != "server_id" {
-			keys = append(keys, key)
-		}
+// uniqueKeyCandidates lists identity candidates in priority order: the
+// dedicated MsgSvrID field first, then each frozen Extra field in list order.
+func uniqueKeyCandidates(raw RawChatlogMessage) []string {
+	candidates := make([]string, 0, 1+len(uniqueKeyExtraFields))
+	candidates = append(candidates, raw.MsgSvrID)
+	for _, field := range uniqueKeyExtraFields {
+		candidates = append(candidates, scalarToString(raw.Extra[field]))
 	}
-	sort.Strings(keys)
-	values := make([]string, 0, len(keys))
-	for _, key := range keys {
-		values = append(values, scalarToString(extra[key]))
-	}
-	return values
+	return candidates
 }
 
 // scalarToString renders a JSON-style scalar as its identity string; nil and
