@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>聊天关系分析报告</title>
+<style>
+:root{--self:#2b6cb0;--partner:#c53030;--ink:#1a202c;--muted:#64748b;--line:#e2e8f0;--bg:#f7fafc}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:20px;margin:0 0 6px}
+.meta{color:var(--muted);font-size:12px;word-break:break-all;line-height:1.8}
+.tag{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:1px 8px;margin-right:6px;background:#fff}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin:16px 0}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px}
+.card .k{color:var(--muted);font-size:12px}
+.card .v{font-size:20px;font-weight:600;margin-top:2px;word-break:break-all}
+.card .s{color:var(--muted);font-size:11px;margin-top:2px}
+section{background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px;margin:14px 0}
+section h2{font-size:15px;margin:0 0 4px}
+.note{color:var(--muted);font-size:12px;margin:8px 0 0}
+.chart{width:100%;height:320px}
+.chart.tall{height:400px}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:760px){.duo{grid-template-columns:1fr}}
+.warn{background:#fffaf0;border:1px solid #e6c34a;border-radius:10px;padding:14px 16px;margin:14px 0}
+.warn h2{font-size:14px;margin:0 0 6px;color:#8a6116}
+.warn p{margin:0;font-size:13px}
+.bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:#edf2f7;margin:10px 0 6px}
+.bar i{display:block;height:100%}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:middle}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>聊天关系分析报告</h1>
+  <div class="meta">
+    <span class="tag">会话指纹 {{.View.Meta.TalkerHash}}</span>
+    <span class="tag">{{date .View.Meta.RangeStartMs}} — {{date .View.Meta.RangeEndMs}}</span>
+    <span class="tag">行为模型 {{.View.Meta.BehaviorModelVersion}}</span>
+    <span class="tag">情感模型 {{.View.Meta.SentimentModelVersion}}</span>
+  </div>
+</header>
+
+<div class="warn">
+  <h2>先读这里</h2>
+  <p>{{.View.Disclaimer}}</p>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">总消息</div><div class="v">{{.View.Summary.SelfMsgs | add .View.Summary.PartnerMsgs}}</div><div class="s">我 {{.View.Summary.SelfMsgs}} · 对方 {{.View.Summary.PartnerMsgs}}</div></div>
+  <div class="card"><div class="k">有聊天记录的天数</div><div class="v">{{.View.Summary.DayCount}}</div><div class="s">共 {{.View.Summary.ConversationCount}} 段对话</div></div>
+  <div class="card"><div class="k">平均每条字数</div><div class="v">{{num1 .View.Summary.AvgPartnerLen}}</div><div class="s">我 {{num1 .View.Summary.AvgSelfLen}}</div></div>
+  <div class="card"><div class="k">深夜消息占比</div><div class="v">{{pct .View.Summary.LateNightRatio}}</div><div class="s">23:00 之后发出</div></div>
+  <div class="card"><div class="k">我发起对话的比例</div><div class="v">{{pct .View.Summary.InitiatorRatio}}</div><div class="s">按每段对话首条计</div></div>
+  <div class="card"><div class="k">我当天开场 / 收尾</div><div class="v">{{.View.Summary.DailyFirstIsSelfCount}} / {{.View.Summary.DailyLastIsSelfCount}}</div><div class="s">天数为单位</div></div>
+  <div class="card"><div class="k">回复中位数</div><div class="v">{{span .View.Summary.Reply.MedianMs}}</div><div class="s">P90 {{span .View.Summary.Reply.P90Ms}}</div></div>
+  <div class="card"><div class="k">一分钟内回复</div><div class="v">{{pct .View.Summary.Reply.FastRatio}}</div><div class="s">样本 {{.View.Summary.Reply.SampleCount}} 次</div></div>
+</div>
+
+<section>
+  <h2>说完话的字数配比</h2>
+  <div class="bar">
+    <i style="width:{{pct .View.Summary.TurnBalanceCharRatio}};background:var(--self)"></i>
+    <i style="width:{{rest .View.Summary.TurnBalanceCharRatio}};background:var(--partner)"></i>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--self)"></i>我 {{.View.Summary.SelfChars}} 字</span>
+    <span><i class="dot" style="background:var(--partner)"></i>对方 {{.View.Summary.PartnerChars}} 字</span>
+  </div>
+  <p class="note">只统计字数占比，不解释成谁更投入。</p>
+</section>
+
+<section>
+  <h2>作息与活跃度热力图</h2>
+  <p class="note">行是周一至周日，列是 0–23 点（东八区）。颜色深浅为双方消息总量。</p>
+  <div id="heat" class="chart tall"></div>
+</section>
+
+<div class="duo">
+  <section>
+    <h2>我的高频词</h2>
+    <div id="wcSelf" class="chart tall"></div>
+  </section>
+  <section>
+    <h2>对方的高频词</h2>
+    <div id="wcPartner" class="chart tall"></div>
+  </section>
+</div>
+
+<div class="duo">
+  <section>
+    <h2>我常用的表情</h2>
+    <div id="emoSelf" class="chart"></div>
+  </section>
+  <section>
+    <h2>对方常用的表情</h2>
+    <div id="emoPartner" class="chart"></div>
+  </section>
+</div>
+
+<section>
+  <h2>情绪分布</h2>
+  <p class="note">七类情绪来自词典规则匹配，仅覆盖被成功打分的消息；「未匹配」是没命中任何情绪词，不是平静。</p>
+  <div class="duo">
+    <div id="radar" class="chart"></div>
+    <div id="emoBar" class="chart"></div>
+  </div>
+  <div class="bar">
+    <i style="width:{{pct .View.Emotion.PositiveRatio}};background:#3182ce"></i>
+    <i style="width:{{rest .View.Emotion.PositiveRatio}};background:#c53030"></i>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:#3182ce"></i>正向占已判定情绪 {{pct .View.Emotion.PositiveRatio}}</span>
+    <span><i class="dot" style="background:#c53030"></i>负向</span>
+    <span>中性/未匹配 {{.View.Emotion.NeutralCount}} 条，不计入该比例</span>
+  </div>
+</section>
+
+<section>
+  <h2>消息类型分布</h2>
+  <div id="types" class="chart"></div>
+  <p class="note">
+    情感分析只读文本消息（msg_type=1），已打分 {{.View.Coverage.Scored}} / {{.View.Coverage.Total}} 条{{if .View.Coverage.Partial}}，<strong>本次为部分覆盖</strong>，情绪与词频只反映已打分的部分{{end}}。
+  </p>
+  {{if .View.Coverage.ExcludedTypes}}
+  <table>
+    <tr><th>被跳过的类型</th><th class="n">条数</th></tr>
+    {{range .View.Coverage.ExcludedTypes}}<tr><td>msg_type = {{.MsgType}}</td><td class="n">{{.Count}}</td></tr>{{end}}
+  </table>
+  {{end}}
+</section>
+
+<footer class="note">本文件为自包含单页，不加载任何外部资源，打开时不产生网络请求。生成后请自行确认分享范围。</footer>
+
+</div>
+
+<script data-vendor="echarts">{{.ECharts}}</script>
+<script data-vendor="echarts-wordcloud">{{.WordCloud}}</script>
+<script id="report-data" type="application/json">{{.Data}}</script>
+<script>
+(function () {
+  var D = JSON.parse(document.getElementById('report-data').textContent);
+  var SELF = '#2b6cb0', PARTNER = '#c53030';
+  var WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+  var palette = ['#3182ce', '#38a169', '#805ad5', '#c53030', '#d69e2e', '#dd6b20', '#319795', '#718096'];
+
+  function boot(id, build) {
+    var node = document.getElementById(id);
+    if (!node) { return; }
+    var chart = echarts.init(node);
+    chart.setOption(build());
+    window.addEventListener('resize', function () { chart.resize(); });
+  }
+  function topPairs(list, limit) {
+    return (list || []).slice(0, limit || 15).map(function (e) {
+      return { name: e.Word, value: e.Count };
+    });
+  }
+  function labelPairs(list) {
+    return (list || []).map(function (e) { return { name: e.Word, value: e.Count }; });
+  }
+
+  boot('heat', function () {
+    var cells = D.Heatmap || [], max = 0;
+    var points = cells.map(function (c) {
+      var total = c.SelfCount + c.PartnerCount;
+      if (total > max) { max = total; }
+      return { value: [c.Hour, c.Weekday, total], self: c.SelfCount, partner: c.PartnerCount };
+    });
+    return {
+      grid: { left: 46, right: 16, top: 12, bottom: 40 },
+      tooltip: {
+        formatter: function (p) {
+          return WEEKDAYS[p.data.value[1]] + ' ' + p.data.value[0] + ' 点<br>我 ' + p.data.self + ' 条 · 对方 ' + p.data.partner + ' 条';
+        }
+      },
+      xAxis: { type: 'category', data: Array.from({ length: 24 }, function (_, h) { return h; }), splitArea: { show: true } },
+      yAxis: { type: 'category', data: WEEKDAYS, splitArea: { show: true } },
+      visualMap: { min: 0, max: max || 1, calculable: true, orient: 'horizontal', left: 'center', bottom: 0,
+        inRange: { color: ['#ebf4fb', '#9ec6e6', '#4a86b8', '#1d4e79'] } },
+      series: [{ type: 'heatmap', data: points, emphasis: { itemStyle: { borderColor: '#1a202c', borderWidth: 1 } } }]
+    };
+  });
+
+  function cloud(id, list) {
+    boot(id, function () {
+      return {
+        tooltip: { formatter: function (p) { return p.name + ' · ' + p.value + ' 次'; } },
+        series: [{
+          type: 'wordCloud', shape: 'circle', width: '96%', height: '96%',
+          sizeRange: [12, 46], rotationRange: [-45, 45], rotationStep: 15,
+          gridSize: 6, drawOutOfBound: false, textStyle: { color: function () { return palette[Math.floor(Math.random() * 3)]; } },
+          emphasis: { textStyle: { color: SELF } },
+          data: labelPairs(list)
+        }]
+      };
+    });
+  }
+  cloud('wcSelf', (D.Words || {}).Self);
+  cloud('wcPartner', (D.Words || {}).Partner);
+
+  function emojiBar(id, list, color) {
+    boot(id, function () {
+      var pairs = topPairs(list, 12).reverse();
+      return {
+        grid: { left: 88, right: 32, top: 8, bottom: 24 },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+        xAxis: { type: 'value' },
+        yAxis: { type: 'category', data: pairs.map(function (p) { return p.name; }) },
+        series: [{
+          type: 'bar', data: pairs.map(function (p) { return p.value; }), itemStyle: { color: color },
+          label: { show: true, position: 'right' }, barMaxWidth: 16
+        }]
+      };
+    });
+  }
+  var emoji = D.Emoji || {};
+  emojiBar('emoSelf', emoji.Self, SELF);
+  emojiBar('emoPartner', emoji.Partner, PARTNER);
+
+  var EMO_LABELS = ['好', '乐', '哀', '怒', '惧', '恶', '惊'];
+  boot('radar', function () {
+    var radar = (D.Emotion || {}).Radar || [];
+    return {
+      tooltip: {},
+      radar: {
+        indicator: EMO_LABELS.map(function (label) { return { name: label, max: 1 }; }),
+        radius: '62%', splitNumber: 4
+      },
+      series: [{
+        type: 'radar', areaStyle: { opacity: 0.25 }, lineStyle: { color: SELF }, itemStyle: { color: SELF },
+        data: [{ value: radar.map(function (v) { return Number(v.toFixed(4)); }), name: '占比' }]
+      }]
+    };
+  });
+
+  boot('emoBar', function () {
+    var counts = (D.Emotion || {}).Counts || {};
+    var labels = EMO_LABELS.concat(['中性/未匹配']);
+    return {
+      grid: { left: 46, right: 16, top: 16, bottom: 28 },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      xAxis: { type: 'category', data: labels, axisLabel: { interval: 0 } },
+      yAxis: { type: 'value' },
+      series: [{
+        type: 'bar', barMaxWidth: 32,
+        data: labels.map(function (label, i) {
+          return { value: counts[label] || 0, itemStyle: { color: palette[i % palette.length] } };
+        })
+      }]
+    };
+  });
+
+  boot('types', function () {
+    var seen = D.Summary.Types || [];
+    var skipped = D.Coverage.ExcludedTypes || [];
+    var merged = {}, order = [];
+    seen.concat(skipped).forEach(function (t) { merged[t.MsgType] = (merged[t.MsgType] || 0) + t.Count; });
+    Object.keys(merged).sort(function (a, b) { return Number(a) - Number(b); }).forEach(function (k) { order.push(k); });
+    var skippedSet = {};
+    skipped.forEach(function (t) { skippedSet[t.MsgType] = true; });
+    return {
+      grid: { left: 56, right: 16, top: 16, bottom: 28 },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      xAxis: { type: 'category', data: order.map(function (k) { return 'type ' + k; }), axisLabel: { interval: 0 } },
+      yAxis: { type: 'value' },
+      series: [{
+        type: 'bar', barMaxWidth: 40,
+        data: order.map(function (k) {
+          return { value: merged[k], itemStyle: { color: skippedSet[k] ? '#cbd5e0' : SELF } };
+        })
+      }]
+    };
+  });
+})();
+</script>
+</body>
+</html>
