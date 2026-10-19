@@ -9,7 +9,9 @@ Contract pinned here:
 - `WORD_RE` is the single shared definition of "expression token"
 """
 
-from app.tokenize import WORD_RE, emoji_polarity, tokenize
+import unicodedata
+
+from app.tokenize import WORD_RE, countable_tokens, emoji_polarity, tokenize
 
 
 def test_stopwords_are_removed():
@@ -67,3 +69,38 @@ def test_emoji_polarity_known_neutral_stays_distinguishable_from_unknown():
 def test_tokenize_empty_input():
     assert tokenize("") == []
     assert tokenize("   ") == []
+
+def test_countable_tokens_drops_punctuation():
+    """jieba emits `，` and `！` as tokens of their own, and nothing in the
+    stopword list removes them: that list is about meaningless words, and
+    punctuation is not a word. On the first real conversation this put `，`
+    third in one side's word cloud and `！` third in the other's."""
+    tokens = countable_tokens("今天特别开心，我们一起去看电影！")
+
+    assert "，" not in tokens
+    assert "！" not in tokens
+    for token in tokens:
+        assert not all(unicodedata.category(c).startswith("P") for c in token), token
+
+
+def test_countable_tokens_keeps_words_symbols_and_expression_marks():
+    """Only punctuation is removed. Expression marks are counted deliberately,
+    and a raw emoji is a symbol the expression map may still have an opinion
+    about — neither is punctuation."""
+    tokens = countable_tokens("好开心[捂脸]😀")
+
+    # The custom dictionary keeps 好开心 together as one token, so this
+    # asserts on the content rather than on a particular cut.
+    assert any("开心" in token for token in tokens), tokens
+    assert "[捂脸]" in tokens
+    assert "😀" in tokens
+
+
+def test_countable_tokens_does_not_change_the_scoring_stream():
+    """The scoring path measures its windows in token positions, so removing a
+    token from that stream would move every hit closer to its modifier. The two
+    views must agree everywhere except on punctuation."""
+    text = "我不太开心，但是还可以"
+    scoring = [t for t in tokenize(text) if not all(unicodedata.category(c).startswith("P") for c in t)]
+
+    assert countable_tokens(text) == scoring

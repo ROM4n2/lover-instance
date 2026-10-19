@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import unicodedata
 from typing import Iterator
 
 import jieba
@@ -106,6 +107,35 @@ def tokenize(text: str) -> list[str]:
                 continue
             tokens.append(token)
     return tokens
+
+
+def _is_punctuation(token: str) -> bool:
+    """Whether a token is punctuation and nothing else.
+
+    Only punctuation counts, not every non-word symbol: an expression mark
+    arriving here is `[捂脸]`, which the report tallies deliberately, and a raw
+    Unicode emoji is a symbol the expression map may still have an opinion
+    about. Neither is a piece of punctuation.
+    """
+    return all(unicodedata.category(char).startswith("P") for char in token)
+
+
+def countable_tokens(text: str) -> list[str]:
+    """The token stream as the word cloud sees it: punctuation removed.
+
+    jieba cuts `，` and `！` out as tokens in their own right, and nothing in
+    the stopword list removes them — that list is about meaningless words, and
+    punctuation is not a word at all. On the first real conversation that put
+    `，` third in one side's word cloud and `！` third in the other's, which is
+    not a word cloud anyone can read.
+
+    This is a separate function from `tokenize` rather than a filter inside it,
+    because the scoring path measures its degree and negation windows in token
+    positions. Removing a token from that stream would move every hit closer to
+    its modifier and silently change polarities; this way the scores are
+    untouched and only what gets counted changes.
+    """
+    return [token for token in tokenize(text) if not _is_punctuation(token)]
 
 
 def emoji_polarity(mark: str) -> float | None:

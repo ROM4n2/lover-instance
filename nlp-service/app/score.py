@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.health import mark_lexicon_loaded
 from app.sentiment_lexicon import MODEL_VERSION, score
-from app.tokenize import tokenize
+from app.tokenize import countable_tokens
 
 # Importing app.sentiment_lexicon above loaded and validated every word list;
 # a missing or malformed list raises there, loudly. So by this point the
@@ -80,7 +80,9 @@ def score_batch(items: list[dict]) -> list[dict]:
                 "polarity": result.polarity,
                 "emotion": result.emotion,
                 "intensity": result.intensity,
-                "tokens": tokenize(content),
+                # The counting view, not the scoring one: see
+                # tokenize.countable_tokens. Only punctuation differs.
+                "tokens": countable_tokens(content),
             }
         )
     return results
