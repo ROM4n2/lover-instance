@@ -12,6 +12,7 @@ config.local.yaml
 credentials.json
 
 # === 微信聊天隐私数据（最高敏感，绝不可入库）===
+# 这五条不带前导斜杠，故意匹配任意层级，宁可多忽略不可漏。
 data/
 exports/
 raw/
@@ -26,6 +27,11 @@ reports/
 *.report.html
 .chatlog/
 workmem/
+
+# 例外：nlp-service 的词典/停用词/表情映射是入库交付物（词表），不是聊天数据。
+# 必须写在 data/ 之后——上面的 data/ 会连 nlp-service/data/ 一起吃掉，
+# 表现为 `git add` 静默成功但文件没进去，新 clone 与 CI 上测试全崩。
+!nlp-service/data/
 
 # === 模型权重 / 推理缓存（大文件，不入库）===
 models/
