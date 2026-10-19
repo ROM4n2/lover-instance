@@ -288,6 +288,63 @@ func TestHealth_DistinguishesLoadingFromReady(t *testing.T) {
 	}
 }
 
+// TestHealth_ReportsTheVersionTheServiceWillScoreWith. The caller records this
+// string as the provenance of every score and prints it in the report, so it
+// has to arrive from the service rather than being assumed by the caller.
+func TestHealth_ReportsTheVersionTheServiceWillScoreWith(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ready", "model_loaded": false, "model_version": "lexicon-hownet-v1",
+		})
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv).Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health() error: %v", err)
+	}
+	if got.ModelVersion != "lexicon-hownet-v1" {
+		t.Errorf("ModelVersion = %q, want the service's own lexicon version", got.ModelVersion)
+	}
+}
+
+func TestHealth_ToleratesAServiceThatNamesNoVersionYet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "loading", "model_loaded": false})
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv).Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health() error: %v", err)
+	}
+	if got.ModelVersion != "" {
+		t.Errorf("ModelVersion = %q, want empty while the lexicon is still loading", got.ModelVersion)
+	}
+}
+
+// TestScore_RefusesAResponseFromADifferentModel. Every score is stored under
+// the version that was requested and printed in the report as the provenance
+// of the numbers, so a service that answers with another lexicon must fail the
+// block rather than have its output recorded under the wrong name.
+func TestScore_RefusesAResponseFromADifferentModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model_version": "lexicon-someone-else-v9",
+			"results":       []map[string]any{{"msg_id": 7, "polarity": 0.5, "emotion": "乐", "intensity": 0.4, "tokens": []string{}}},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).Score(context.Background(), "lexicon-hownet-v1", []Item{{MsgID: 7, Content: "开心"}})
+	if err == nil {
+		t.Fatal("Score() = nil error for a response from a different model; the scores would be recorded under a version that did not produce them")
+	}
+	if !strings.Contains(err.Error(), "lexicon-someone-else-v9") {
+		t.Errorf("error %q does not name the version that answered", err)
+	}
+}
+
 func TestHealth_RejectsAnUnrecognizedStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "banana"})

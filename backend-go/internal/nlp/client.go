@@ -59,6 +59,10 @@ type Result struct {
 type Health struct {
 	Status      string
 	ModelLoaded bool
+	// ModelVersion is the lexicon the service will actually score with. The
+	// caller records it as the provenance of every score, so it is taken from
+	// the service rather than assumed. It is empty while the lexicon loads.
+	ModelVersion string
 }
 
 // Client is an HTTP client for the NLP service.
@@ -131,14 +135,15 @@ func (c *Client) Score(ctx context.Context, modelVersion string, items []Item) (
 	if err := c.call(ctx, http.MethodPost, "/score", body, &response); err != nil {
 		return nil, err
 	}
-	return checkAlignment(items, response)
+	return checkAlignment(items, response, modelVersion)
 }
 
 // Health asks whether the service can serve requests.
 func (c *Client) Health(ctx context.Context) (Health, error) {
 	var payload struct {
-		Status      string `json:"status"`
-		ModelLoaded bool   `json:"model_loaded"`
+		Status       string `json:"status"`
+		ModelLoaded  bool   `json:"model_loaded"`
+		ModelVersion string `json:"model_version"`
 	}
 	if err := c.call(ctx, http.MethodGet, "/health", nil, &payload); err != nil {
 		return Health{}, err
@@ -148,7 +153,7 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 	default:
 		return Health{}, fmt.Errorf("nlp: service reported an unrecognized status %q", payload.Status)
 	}
-	return Health{Status: payload.Status, ModelLoaded: payload.ModelLoaded}, nil
+	return Health{Status: payload.Status, ModelLoaded: payload.ModelLoaded, ModelVersion: payload.ModelVersion}, nil
 }
 
 // call performs the request, retrying only what is safe to retry.
@@ -248,7 +253,16 @@ func errorCode(body io.Reader) string {
 // A short, long, or reordered response would silently attach one message's
 // score to another; the database would then hold a plausible-looking but wrong
 // sentiment curve, which nothing downstream could detect.
-func checkAlignment(items []Item, response scoreResponse) ([]Result, error) {
+func checkAlignment(items []Item, response scoreResponse, modelVersion string) ([]Result, error) {
+	// Every score is stored under the version that was asked for, and the
+	// report prints it as the provenance of the numbers. If the service
+	// answered with a different lexicon, the batch would be recorded under a
+	// version that did not produce it — so a mismatch fails the block instead
+	// of being written down. An empty echo is tolerated: the version is
+	// optional in the response contract.
+	if response.ModelVersion != "" && response.ModelVersion != modelVersion {
+		return nil, fmt.Errorf("nlp: asked for model %q but the service scored with %q; refusing to record scores under a version that did not produce them", modelVersion, response.ModelVersion)
+	}
 	if len(response.Results) != len(items) {
 		return nil, fmt.Errorf("nlp: sent %d messages but the service returned %d scores", len(items), len(response.Results))
 	}

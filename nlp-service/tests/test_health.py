@@ -32,9 +32,36 @@ def test_health_returns_status_and_model_loaded():
     resp = client.get("/health")
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body.keys()) == {"status", "model_loaded"}
+    assert set(body.keys()) == {"status", "model_loaded", "model_version"}
     assert body["status"] in {"loading", "ready"}
     assert isinstance(body["model_loaded"], bool)
+
+
+def test_health_reports_the_lexicon_version_it_will_score_with():
+    """The caller records this string as the provenance of every score, so it
+    has to come from the process that holds the lexicon rather than from a
+    constant repeated on the caller's side."""
+    from app import health as health_module
+    from app.sentiment_lexicon import MODEL_VERSION
+
+    client = TestClient(create_app())
+    # The lexicon state is process-global and shared across tests, so the test
+    # sets it directly instead of depending on which module another test
+    # happened to import first.
+    health_module._LEXICON_STATE["version"] = None
+    health_module._LEXICON_STATE["loaded"] = False
+    try:
+        body = client.get("/health").json()
+        assert body["status"] == "loading"
+        assert body["model_version"] is None, "a loading service must not name a version"
+
+        health_module.mark_lexicon_loaded(MODEL_VERSION)
+        body = client.get("/health").json()
+        assert body["status"] == "ready"
+        assert body["model_version"] == MODEL_VERSION
+    finally:
+        health_module._LEXICON_STATE["version"] = MODEL_VERSION
+        health_module._LEXICON_STATE["loaded"] = True
 
 
 def test_health_never_touches_sqlite():
