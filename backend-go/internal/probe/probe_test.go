@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -233,6 +235,47 @@ func TestFindWeChatPaths_ContainsCandidateSubstrings(t *testing.T) {
 			t.Errorf("candidate paths missing %q:\n%s", want, joined)
 		}
 	}
+}
+
+// TestFindWeChatPaths_ScansEveryPresentDrive guards the M0 target-box defect:
+// WeChat installed at D:\Program Files\Tencent\Weixin\Weixin.exe was reported
+// as "not installed" because the candidate list was hard-wired to C:.
+func TestFindWeChatPaths_ScansEveryPresentDrive(t *testing.T) {
+	roots := fixedDriveRoots()
+	if len(roots) == 0 {
+		t.Skip("no drive roots detected on this machine")
+	}
+	joined := strings.Join(FindWeChatPaths(), "\n")
+	for _, root := range roots {
+		for _, want := range []string{
+			filepath.Join(root, `Program Files\Tencent\Weixin\Weixin.exe`),
+			filepath.Join(root, `Program Files\Tencent\WeChat\WeChat.exe`),
+			filepath.Join(root, `xwechat_files`),
+		} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("candidate paths missing %q for present drive %q:\n%s", want, root, joined)
+			}
+		}
+	}
+}
+
+// TestFixedDriveRoots_IncludesSystemDrive pins the enumeration primitive: an
+// empty result would silently make FindWeChatPaths() C:-defaults-only again.
+func TestFixedDriveRoots_IncludesSystemDrive(t *testing.T) {
+	roots := fixedDriveRoots()
+	if len(roots) == 0 {
+		t.Fatal("fixedDriveRoots() is empty: drive enumeration found nothing")
+	}
+	want := strings.ToUpper(os.Getenv("SystemDrive"))
+	if want == "" {
+		want = "C:"
+	}
+	for _, root := range roots {
+		if strings.HasPrefix(strings.ToUpper(root), want) {
+			return
+		}
+	}
+	t.Errorf("fixedDriveRoots() = %v, want it to contain the system drive %q", roots, want)
 }
 
 func TestCheckPortOpen_ClosedPortFalse(t *testing.T) {

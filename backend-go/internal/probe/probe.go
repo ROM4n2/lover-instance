@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -262,11 +263,17 @@ func truncateRawBody(body string) string {
 // FindWeChatPaths returns the candidate WeChat exe/data paths to scan; the
 // caller stats them, so the full search list stays inspectable in probe
 // output. WeChat 4.x renamed the exe to Weixin.exe, hence dual candidates.
+//
+// The system drive is listed first so its hits keep priority, but every
+// present drive is scanned: WeChat is routinely installed under
+// D:\Program Files\Tencent, and a C:-only list reports "not installed" on
+// exactly those machines (observed on the M0 target box, where the exe lives
+// at D:\Program Files\Tencent\Weixin\Weixin.exe).
 func FindWeChatPaths() []string {
 	programFiles := envOr("ProgramFiles", `C:\Program Files`)
 	programFilesX86 := envOr("ProgramFiles(x86)", `C:\Program Files (x86)`)
 	userProfile := envOr("USERPROFILE", `C:\Users\default`)
-	return []string{
+	paths := []string{
 		programFiles + `\Tencent\WeChat\WeChat.exe`,
 		programFiles + `\Tencent\Weixin\Weixin.exe`,
 		programFilesX86 + `\Tencent\WeChat\WeChat.exe`,
@@ -275,6 +282,60 @@ func FindWeChatPaths() []string {
 		userProfile + `\AppData\Local\Tencent\Weixin\Weixin.exe`,
 		userProfile + `\Documents\WeChat Files`,
 	}
+	return append(paths, driveWeChatPaths()...)
+}
+
+// exeRelatives are the install-relative exe locations tried under each drive
+// root; dataRelatives are the account-data directories (WeChat 4.x uses
+// xwechat_files, 3.x used WeChat Files).
+var (
+	exeRelatives = []string{
+		`Program Files\Tencent\WeChat\WeChat.exe`,
+		`Program Files\Tencent\Weixin\Weixin.exe`,
+		`Program Files (x86)\Tencent\WeChat\WeChat.exe`,
+		`Program Files (x86)\Tencent\Weixin\Weixin.exe`,
+		`Tencent\WeChat\WeChat.exe`,
+		`Tencent\Weixin\Weixin.exe`,
+	}
+	dataRelatives = []string{
+		`Documents\WeChat Files`,
+		`Documents\xwechat_files`,
+		`WeChat Files`,
+		`xwechat_files`,
+	}
+)
+
+// driveWeChatPaths expands the relative candidates under every drive present
+// on this machine.
+func driveWeChatPaths() []string {
+	roots := fixedDriveRoots()
+	perRoot := len(exeRelatives) + len(dataRelatives)
+	paths := make([]string, 0, len(roots)*perRoot)
+	for _, root := range roots {
+		for _, rel := range exeRelatives {
+			paths = append(paths, filepath.Join(root, rel))
+		}
+		for _, rel := range dataRelatives {
+			paths = append(paths, filepath.Join(root, rel))
+		}
+	}
+	return paths
+}
+
+// fixedDriveRoots lists the roots of the drives that exist, probing every
+// letter in turn and skipping any that is absent or unreadable rather than
+// failing the whole scan.
+func fixedDriveRoots() []string {
+	roots := make([]string, 0, 4)
+	for letter := 'A'; letter <= 'Z'; letter++ {
+		root := string(letter) + `:\`
+		info, err := os.Stat(root)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		roots = append(roots, root)
+	}
+	return roots
 }
 
 func envOr(key, fallback string) string {
