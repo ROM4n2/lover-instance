@@ -18,6 +18,11 @@ const (
 	testTalker       = "wxid_peer_b"
 )
 
+// testBaseMs is the first seeded message's timestamp. It is a package-level
+// value so a test can append a message after the fixture without re-deriving
+// the same instant.
+var testBaseMs = time.Date(2026, time.August, 16, 12, 0, 0, 0, time.UTC).UnixMilli()
+
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
 	dsn, err := store.DSN(filepath.Join(t.TempDir(), "data.db"))
@@ -40,7 +45,7 @@ func newStore(t *testing.T) *store.Store {
 func seedConversation(t *testing.T, s *store.Store) {
 	t.Helper()
 	ctx := context.Background()
-	base := time.Date(2026, time.August, 16, 12, 0, 0, 0, time.UTC).UnixMilli()
+	base := testBaseMs
 
 	messages := []model.CanonicalMessage{
 		{UniqueKey: "k1", TimestampMs: base, Talker: testTalker, Sender: "wxid_self", IsSelf: true, Type: 1, Content: "今天特别开心"},
@@ -201,6 +206,60 @@ func TestCollect_EmotionViewIsAlignedToOneOrder(t *testing.T) {
 	// matched emotion word, not an emotional state.
 	if got := len(view.Emotion.Radar); got != len(Emotions) {
 		t.Errorf("len(Radar) = %d, want %d so neutral cannot appear as an eighth spoke", got, len(Emotions))
+	}
+}
+
+// TestCollect_NeutralBucketIsTheUnmatchedOne pins the defect the acceptance run
+// over a real export exposed. There are two ways to count a neutral message —
+// no matched emotion word, or a polarity of exactly zero — and they disagree
+// whenever a matched emotion word nets to zero polarity, which happens in real
+// data. Sourcing the neutral bucket from one query and the other seven from
+// another made the shares divide by a total matching no count anywhere.
+func TestCollect_NeutralBucketIsTheUnmatchedOne(t *testing.T) {
+	s := newStore(t)
+	seedConversation(t, s)
+
+	// A fifth text message with a matched emotion word but zero polarity: the
+	// emotion bucket and the polarity bucket now hold different numbers.
+	result, err := s.DB().Exec(`
+INSERT INTO messages (source, source_msg_id, ts, talker, sender, is_self, msg_type, sub_type, content, content_sha1)
+VALUES ('chatlog-keeper','k5',?,?, 'wxid_self', 1, 1, 0, '还行', 'h5')`, testBaseMs+300_000, testTalker)
+	if err != nil {
+		t.Fatalf("insert divergent message: %v", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read the inserted id: %v", err)
+	}
+	if _, err := s.DB().Exec(
+		`INSERT INTO sentiment (msg_id, model_version, polarity, emotion, intensity) VALUES (?,?,?,?,?)`,
+		id, testModelVersion, 0.0, "惊", 0.3); err != nil {
+		t.Fatalf("insert divergent score: %v", err)
+	}
+	if err := s.RebuildBehaviorMetrics(context.Background(), testTalker); err != nil {
+		t.Fatalf("RebuildBehaviorMetrics() error: %v", err)
+	}
+
+	view := collect(t, s)
+
+	if view.Emotion.ScoredTotal != view.Coverage.Scored {
+		t.Errorf("ScoredTotal = %d but %d messages were scored: the breakdown is counted twice over", view.Emotion.ScoredTotal, view.Coverage.Scored)
+	}
+	sum := 0
+	for _, count := range view.Emotion.Counts {
+		sum += count
+	}
+	if sum != view.Emotion.ScoredTotal {
+		t.Errorf("the emotion counts sum to %d but ScoredTotal is %d", sum, view.Emotion.ScoredTotal)
+	}
+	// The two neutral buckets must now differ, or this test is reproducing
+	// nothing: two messages have polarity zero (the neutral baseline row and
+	// this one) while only one of them failed to match an emotion word.
+	if view.Emotion.NeutralCount != 1 {
+		t.Errorf("NeutralCount = %d, want 1 — the unmatched one, not the zero-polarity one", view.Emotion.NeutralCount)
+	}
+	if view.Emotion.Counts["惊"] != 1 {
+		t.Errorf("the zero-polarity message was not counted under 惊: %+v", view.Emotion.Counts)
 	}
 }
 

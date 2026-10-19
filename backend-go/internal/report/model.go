@@ -73,9 +73,17 @@ type SummaryView struct {
 	AvgSelfLen    float64
 	AvgPartnerLen float64
 
-	LateNightRatio       float64
-	InitiatorRatio       float64
+	LateNightRatio float64
+	InitiatorRatio float64
+
+	// TurnBalanceCharRatio and TurnBalanceMsgRatio are ratios, not shares:
+	// 1.27 means this side wrote 1.27 characters for every one of the other
+	// side's, and the bar beside them is drawn from ratio/(1+ratio) so the two
+	// sides still meet at a whole. Passing a ratio straight to the bar helper
+	// produced a 126.8% width and a negative one beside it on the first run
+	// over real data.
 	TurnBalanceCharRatio float64
+	TurnBalanceMsgRatio  float64
 
 	DailyFirstIsSelfCount int
 	DailyLastIsSelfCount  int

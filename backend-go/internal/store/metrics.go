@@ -93,6 +93,12 @@ type BehaviorMetrics struct {
 	// TurnBalanceCharRatio is self-typed characters per partner-typed
 	// character. Above one means this user writes more.
 	TurnBalanceCharRatio float64
+	// TurnBalanceMsgRatio is self-sent messages per partner-sent message, the
+	// other half of the turn balance the design asks for. The two can point in
+	// opposite directions — many short messages against few long ones — which
+	// is exactly why both are reported rather than one standing in for the
+	// other.
+	TurnBalanceMsgRatio float64
 	// AvgSelfLen and AvgPartnerLen are mean characters per message.
 	AvgSelfLen    float64
 	AvgPartnerLen float64
@@ -333,6 +339,9 @@ func foldBehavior(facts []messageFact) BehaviorMetrics {
 	}
 	if partnerChars > 0 {
 		metrics.TurnBalanceCharRatio = float64(selfChars) / float64(partnerChars)
+	}
+	if partnerMsgs > 0 {
+		metrics.TurnBalanceMsgRatio = float64(selfMsgs) / float64(partnerMsgs)
 	}
 	if selfMsgs > 0 {
 		metrics.AvgSelfLen = float64(selfChars) / float64(selfMsgs)

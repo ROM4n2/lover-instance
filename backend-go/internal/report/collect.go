@@ -44,7 +44,11 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
-	positive, negative, neutral, err := s.SentimentTotals(ctx, talker, sentimentModelVersion)
+	// The polarity rollup is read for its two judged buckets only. Its third
+	// bucket counts a different thing — polarity of zero rather than an unmatched
+	// emotion word — and emotionView takes that count from the distribution
+	// instead, so this one is deliberately discarded rather than passed along.
+	positive, negative, _, err := s.SentimentTotals(ctx, talker, sentimentModelVersion)
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
@@ -69,7 +73,7 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 		Heatmap:    heatmapOf(behavior),
 		Words:      WordsView{Self: topWords(selfTokens, false), Partner: topWords(partnerTokens, false)},
 		Emoji:      EmojiView{Self: topWords(selfTokens, true), Partner: topWords(partnerTokens, true)},
-		Emotion:    emotionView(distribution, positive, negative, neutral),
+		Emotion:    emotionView(distribution, positive, negative),
 		Coverage:   CoverageView{Scored: coverage.Scored, Total: coverage.Total, Partial: coverage.Scored < coverage.Total, ExcludedTypes: excluded},
 		Disclaimer: DisclaimerText,
 	}
@@ -103,6 +107,7 @@ func summarize(behavior store.BehaviorMetrics) SummaryView {
 		LateNightRatio:        behavior.LateNightRatio,
 		InitiatorRatio:        behavior.InitiatorRatio,
 		TurnBalanceCharRatio:  behavior.TurnBalanceCharRatio,
+		TurnBalanceMsgRatio:   behavior.TurnBalanceMsgRatio,
 		DailyFirstIsSelfCount: firstIsSelf,
 		DailyLastIsSelfCount:  lastIsSelf,
 		DayCount:              len(behavior.Daily),
@@ -163,13 +168,24 @@ func topWords(tokens map[string]int, wantEmoji bool) []WordCount {
 // The radar excludes the neutral bucket: neutral is the absence of a matched
 // emotion word, and plotting it as an eighth spoke would read as an emotional
 // state rather than as a failure to classify.
-func emotionView(distribution map[string]int, positive, negative, neutral int) EmotionView {
+//
+// Every count here, neutral included, comes from the emotion distribution.
+// There is a second way to count a neutral message — polarity of exactly zero —
+// and the two do not agree: the acceptance run over a real 32,624-message
+// export found three messages carrying a matched emotion word yet a polarity of
+// exactly zero, so the polarity bucket held 17,258 where the emotion bucket
+// held 17,255. Taking the neutral bucket from one query and the other seven
+// from another made the shares divide by a total that matched no count
+// anywhere, while the coverage figure beside it said something else. "No
+// emotion word matched" is what this label means, and that is the distribution.
+func emotionView(distribution map[string]int, positive, negative int) EmotionView {
 	counts := make(map[string]int, len(Emotions)+1)
 	scoredTotal := 0
 	for _, emotion := range Emotions {
 		counts[emotion] = distribution[emotion]
 		scoredTotal += distribution[emotion]
 	}
+	neutral := distribution[NeutralLabel]
 	counts[NeutralLabel] = neutral
 	scoredTotal += neutral
 

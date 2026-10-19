@@ -232,11 +232,62 @@ func TestBehaviorMetrics_CountsCharsPerSide(t *testing.T) {
 	if metrics.TurnBalanceCharRatio != 2 {
 		t.Errorf("TurnBalanceCharRatio = %v, want 2", metrics.TurnBalanceCharRatio)
 	}
+	// Two short messages against one long one: the count ratio and the
+	// character ratio answer differently, which is why the design asks for
+	// both rather than letting one stand in for the other.
+	if metrics.TurnBalanceMsgRatio != 2 {
+		t.Errorf("TurnBalanceMsgRatio = %v, want 2", metrics.TurnBalanceMsgRatio)
+	}
 	if metrics.AvgSelfLen != 3 {
 		t.Errorf("AvgSelfLen = %v, want 3", metrics.AvgSelfLen)
 	}
 	if metrics.AvgPartnerLen != 3 {
 		t.Errorf("AvgPartnerLen = %v, want 3", metrics.AvgPartnerLen)
+	}
+}
+
+// TestBehaviorMetrics_TurnBalanceRatiosCanDisagree is the case the report has
+// to be able to show: many short messages on one side, fewer long ones on the
+// other. A single "turn balance" number would have to pick one and quietly
+// misdescribe the conversation.
+func TestBehaviorMetrics_TurnBalanceRatiosCanDisagree(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	base := at(2026, time.August, 16, 12, 0, 0)
+	put(t, s, "k1", base, true, "好")
+	put(t, s, "k2", base+1000, true, "好")
+	put(t, s, "k3", base+2000, true, "好")
+	put(t, s, "k4", base+3000, true, "好")
+	put(t, s, "k5", base+4000, false, "今天真的很忙我一直在开会所以现在才回你")
+
+	metrics, err := s.BehaviorMetrics(ctx, "c")
+	if err != nil {
+		t.Fatalf("BehaviorMetrics() error: %v", err)
+	}
+	if metrics.TurnBalanceMsgRatio != 4 {
+		t.Errorf("TurnBalanceMsgRatio = %v, want 4 messages to 1", metrics.TurnBalanceMsgRatio)
+	}
+	if metrics.TurnBalanceCharRatio >= 1 {
+		t.Errorf("TurnBalanceCharRatio = %v, want under 1: fewer characters to more messages", metrics.TurnBalanceCharRatio)
+	}
+}
+
+// TestBehaviorMetrics_TurnBalanceIsZeroWithoutAPartner keeps the ratios finite
+// when one side is absent, so the report never divides by a zero count.
+func TestBehaviorMetrics_TurnBalanceIsZeroWithoutAPartner(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	base := at(2026, time.August, 16, 12, 0, 0)
+	put(t, s, "k1", base, true, "一个人说话")
+	put(t, s, "k2", base+1000, true, "继续说")
+
+	metrics, err := s.BehaviorMetrics(ctx, "c")
+	if err != nil {
+		t.Fatalf("BehaviorMetrics() error: %v", err)
+	}
+	if metrics.TurnBalanceCharRatio != 0 || metrics.TurnBalanceMsgRatio != 0 {
+		t.Errorf("ratios = %v/%v, want 0/0 rather than an infinity",
+			metrics.TurnBalanceCharRatio, metrics.TurnBalanceMsgRatio)
 	}
 }
 

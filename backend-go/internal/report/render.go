@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -55,12 +56,14 @@ func Render(w io.Writer, view View) error {
 	// still gets the numbers and the caveats. The charts are the only part
 	// that needs JavaScript.
 	tmpl, err := template.New("report.html.tmpl").Funcs(template.FuncMap{
-		"pct":  percent,
-		"rest": remainder,
-		"num1": oneDecimal,
-		"date": dateOf,
-		"span": duration,
-		"add":  sum,
+		"pct":   percent,
+		"rest":  remainder,
+		"split": splitOf,
+		"num1":  oneDecimal,
+		"num2":  twoDecimals,
+		"date":  dateOf,
+		"span":  duration,
+		"add":   sum,
 	}).ParseFS(templateFS, "templates/report.html.tmpl")
 	if err != nil {
 		return fmt.Errorf("report: parse template: %w", err)
@@ -146,9 +149,37 @@ func remainder(share float64) string {
 	return percent(1 - share)
 }
 
+// splitOf converts a one-side-against-the-other ratio into that side's share
+// of the total. The turn balance figures are ratios — 1.27 means "1.27
+// characters for every one of theirs" — and a bar needs a fraction of a whole,
+// so r/(1+r) is what makes the two sides meet at 100% instead of overflowing
+// the strip and giving its neighbour a negative width.
+func splitOf(ratio float64) float64 {
+	if ratio <= 0 || math.IsNaN(ratio) {
+		return 0
+	}
+	if math.IsInf(ratio, 1) {
+		return 1
+	}
+	return ratio / (1 + ratio)
+}
+
 // oneDecimal renders a small average, which is a count rather than a share.
+// A non-finite value renders as a dash rather than as "NaN" in the report.
 func oneDecimal(value float64) string {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return "—"
+	}
 	return strconv.FormatFloat(value, 'f', 1, 64)
+}
+
+// twoDecimals renders a ratio. "1.27 : 1" is how a reader says it aloud, and
+// it is the figure the bar beside it is derived from.
+func twoDecimals(ratio float64) string {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return "—"
+	}
+	return strconv.FormatFloat(ratio, 'f', 2, 64)
 }
 
 // sum adds two counts for the "total messages" card.

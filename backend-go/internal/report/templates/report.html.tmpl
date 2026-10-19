@@ -64,18 +64,23 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
   <div class="card"><div class="k">回复中位数</div><div class="v">{{span .View.Summary.Reply.MedianMs}}</div><div class="s">P90 {{span .View.Summary.Reply.P90Ms}}</div></div>
   <div class="card"><div class="k">一分钟内回复</div><div class="v">{{pct .View.Summary.Reply.FastRatio}}</div><div class="s">样本 {{.View.Summary.Reply.SampleCount}} 次</div></div>
 </div>
+<p class="note">
+  回复时延按相邻两条消息计算，分辨率为秒：同秒内的回复记 0 秒，样本 {{.View.Summary.Reply.SampleCount}} 次。
+</p>
 
 <section>
-  <h2>说完话的字数配比</h2>
+  <h2>话轮平衡</h2>
   <div class="bar">
-    <i style="width:{{pct .View.Summary.TurnBalanceCharRatio}};background:var(--self)"></i>
-    <i style="width:{{rest .View.Summary.TurnBalanceCharRatio}};background:var(--partner)"></i>
+    <i style="width:{{pct (split .View.Summary.TurnBalanceCharRatio)}};background:var(--self)"></i>
+    <i style="width:{{rest (split .View.Summary.TurnBalanceCharRatio)}};background:var(--partner)"></i>
   </div>
   <div class="legend">
-    <span><i class="dot" style="background:var(--self)"></i>我 {{.View.Summary.SelfChars}} 字</span>
-    <span><i class="dot" style="background:var(--partner)"></i>对方 {{.View.Summary.PartnerChars}} 字</span>
+    <span><i class="dot" style="background:var(--self)"></i>我 {{.View.Summary.SelfChars}} 字 / {{.View.Summary.SelfMsgs}} 条</span>
+    <span><i class="dot" style="background:var(--partner)"></i>对方 {{.View.Summary.PartnerChars}} 字 / {{.View.Summary.PartnerMsgs}} 条</span>
+    <span>字数比 {{num2 .View.Summary.TurnBalanceCharRatio}} : 1</span>
+    <span>消息数比 {{num2 .View.Summary.TurnBalanceMsgRatio}} : 1</span>
   </div>
-  <p class="note">只统计字数占比，不解释成谁更投入。</p>
+  <p class="note">只统计条数与字数，不解释成谁更投入。两个比值可能指向相反的方向——话多而短，或话少而长。</p>
 </section>
 
 <section>

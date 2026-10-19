@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -85,6 +86,15 @@ func TestRender_ShowsTheNumbersWithoutJavaScript(t *testing.T) {
 	if !strings.Contains(html, view.Meta.TalkerHash) {
 		t.Error("the conversation fingerprint is not in the static markup")
 	}
+	// The design requires the report to state the resolution the latencies
+	// were measured at. Without it "16.0 秒" reads as a precise measurement
+	// rather than a second-granularity one.
+	if !strings.Contains(html, "同秒内的回复记 0 秒") {
+		t.Error("the report does not state the reply-latency resolution")
+	}
+	if !strings.Contains(html, "按相邻两条消息计算") {
+		t.Error("the report does not say what a reply latency is measured between")
+	}
 }
 
 // TestRender_CarriesNoConversationKey. The fingerprint replaced the key in the
@@ -133,6 +143,47 @@ func TestRender_IsByteStable(t *testing.T) {
 		if again := render(t, view); again != first {
 			t.Fatalf("run %d differs from the first render", i+2)
 		}
+	}
+}
+
+// barWidthMatches picks up every paired-bar width the template writes.
+var barWidthMatches = regexp.MustCompile(`<i style="width:(-?[0-9.]+)%;`)
+
+// TestRender_BarsStayInsideTheirStrip. The turn balance figures are ratios, not
+// shares, and the first run over a real export — where one side wrote 27% more
+// than the other — rendered a 126.8% width and a partner segment of minus 26.8%
+// beside it. A width outside the strip is an arithmetic error, not a style
+// choice, and it is invisible to tests that only compare the numbers.
+func TestRender_BarsStayInsideTheirStrip(t *testing.T) {
+	s := newStore(t)
+	seedConversation(t, s)
+	view := collect(t, s)
+	view.Summary.SelfChars = 213_154
+	view.Summary.PartnerChars = 168_134
+	view.Summary.TurnBalanceCharRatio = 213_154.0 / 168_134.0
+	view.Summary.TurnBalanceMsgRatio = 17_919.0 / 14_705.0
+
+	html := render(t, view)
+	matches := barWidthMatches.FindAllStringSubmatch(html, -1)
+	if len(matches) < 4 {
+		t.Fatalf("found only %d bar segments; the paired bars are not being rendered", len(matches))
+	}
+	for _, match := range matches {
+		width, err := strconv.ParseFloat(match[1], 64)
+		if err != nil {
+			t.Fatalf("unparsable width %q", match[1])
+		}
+		if width < 0 || width > 100 {
+			t.Errorf("a bar segment is %v%% wide, which is outside its strip: %q", width, match[0])
+		}
+	}
+	// The turn balance ratio has to be legible as a ratio somewhere, or the
+	// bar alone would hide which side the number came from.
+	if !strings.Contains(html, "1.27 : 1") {
+		t.Error("the ratio itself is not stated")
+	}
+	if !strings.Contains(html, "1.22 : 1") {
+		t.Errorf("the message-count ratio is missing; the design asks for both")
 	}
 }
 
