@@ -101,8 +101,8 @@ func TestRun_WritesAReportAndSummarizesItInOneLine(t *testing.T) {
 	if parsed.Messages != 5 {
 		t.Errorf("Messages = %d, want 5 (behavioral metrics cover every type)", parsed.Messages)
 	}
-	if parsed.Analyzable != 4 {
-		t.Errorf("Analyzable = %d, want 4 (the image is out of the sentiment pass)", parsed.Analyzable)
+	if parsed.Total != 4 {
+		t.Errorf("Total = %d, want 4 (the image is out of the sentiment pass)", parsed.Total)
 	}
 	if parsed.TalkerHash == "" || strings.Contains(parsed.TalkerHash, "wxid") {
 		t.Errorf("TalkerHash = %q, want a fingerprint rather than the conversation key", parsed.TalkerHash)
@@ -334,8 +334,8 @@ func TestRun_ScoresThroughTheServiceAndRecordsItsVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(got.stdout)), &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Scored != 4 || parsed.Partial {
-		t.Errorf("Scored = %d, Partial = %v, want 4 and false", parsed.Scored, parsed.Partial)
+	if parsed.Scored != 4 || parsed.Coverage != 4 || parsed.Partial {
+		t.Errorf("Scored/Coverage/Partial = %d/%d/%v, want 4/4/false", parsed.Scored, parsed.Coverage, parsed.Partial)
 	}
 	if parsed.SentimentModel != "lexicon-hownet-v1" {
 		t.Errorf("SentimentModel = %q, want the version the service reported", parsed.SentimentModel)
@@ -391,8 +391,28 @@ func TestRun_ResumesAfterAFailedScoringPass(t *testing.T) {
 	if parsed.Inserted != 0 {
 		t.Errorf("Inserted = %d on the second run, want 0", parsed.Inserted)
 	}
-	if parsed.Scored != 4 {
-		t.Errorf("Scored = %d, want all 4 analyzable messages", parsed.Scored)
+	if parsed.Scored != 4 || parsed.Coverage != 4 {
+		t.Errorf("Scored/Coverage = %d/%d, want 4/4", parsed.Scored, parsed.Coverage)
+	}
+
+	// The third run scores nothing because there is nothing left to score, and
+	// must still report the conversation as fully covered. Calling this partial
+	// is the shape the acceptance run over a real export produced: a finished
+	// conversation described as half done, purely because the run itself had no
+	// work to do.
+	third := invoke(t, h.args("--nlp-url", srv.URL)...)
+	if third.code != exitOK {
+		t.Fatalf("third run failed: %s", third.stderr)
+	}
+	var again summary
+	if err := json.Unmarshal([]byte(strings.TrimSpace(third.stdout)), &again); err != nil {
+		t.Fatal(err)
+	}
+	if again.Scored != 0 {
+		t.Errorf("scored_this_run = %d on a completed conversation, want 0", again.Scored)
+	}
+	if again.Coverage != 4 || again.Partial {
+		t.Errorf("Coverage = %d, Partial = %v, want 4 and false: a fully scored conversation must not be reported as incomplete", again.Coverage, again.Partial)
 	}
 }
 

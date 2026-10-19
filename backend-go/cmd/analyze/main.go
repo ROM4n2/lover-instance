@@ -97,18 +97,35 @@ type summary struct {
 	SentimentModel string `json:"sentiment_model"`
 	TalkerHash     string `json:"talker_fingerprint"`
 
-	Parsed     int  `json:"parsed"`
-	Inserted   int  `json:"inserted"`
-	Updated    int  `json:"updated"`
-	Skipped    int  `json:"skipped"`
-	Messages   int  `json:"messages"`
-	Analyzable int  `json:"analyzable"`
-	Scored     int  `json:"scored"`
-	Partial    bool `json:"coverage_partial"`
+	Parsed   int `json:"parsed"`
+	Inserted int `json:"inserted"`
+	Updated  int `json:"updated"`
+	Skipped  int `json:"skipped"`
+	Messages int `json:"messages"`
+
+	// Scored is what this run scored, which is zero on a re-run. Coverage is
+	// what the conversation holds, which is what the report will show. They are
+	// different numbers, and reporting the first as though it were the second
+	// makes a finished conversation look half done — a re-run over a fully
+	// scored 32,624-message export reported coverage_partial because it had
+	// scored nothing itself.
+	Scored   int  `json:"scored_this_run"`
+	Coverage int  `json:"coverage_scored"`
+	Total    int  `json:"analyzable"`
+	Partial  bool `json:"coverage_partial"`
 
 	ReportPath  string `json:"report"`
 	ReportBytes int    `json:"report_bytes"`
-	ElapsedMs   int64  `json:"elapsed_ms"`
+
+	// Per-stage timings. A single total says a run took four seconds without
+	// saying whether the cost is the import, the HTTP scoring or the render,
+	// which is the difference between a usable and a useless measurement on
+	// the first real-sized export.
+	IngestMs    int64 `json:"ingest_ms"`
+	BehaviorMs  int64 `json:"behavior_ms"`
+	SentimentMs int64 `json:"sentiment_ms"`
+	RenderMs    int64 `json:"render_ms"`
+	ElapsedMs   int64 `json:"elapsed_ms"`
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -251,10 +268,13 @@ func execute(ctx context.Context, cfg options) (outcome, error) {
 		return outcome{talkers: talkers}, nil
 	}
 
+	at := time.Now()
 	imported, err := importExport(ctx, s, cfg)
 	if err != nil {
 		return outcome{}, err
 	}
+	ingestMs := time.Since(at).Milliseconds()
+
 	talker, err := resolveTalker(imported, cfg.talker)
 	if err != nil {
 		return outcome{}, err
@@ -263,29 +283,37 @@ func execute(ctx context.Context, cfg options) (outcome, error) {
 	// Unconditional, and before the report is assembled: an export imports
 	// messages without touching the aggregates, so skipping this leaves the
 	// report describing the previous run's conversation.
+	at = time.Now()
 	if err := s.RebuildBehaviorMetrics(ctx, talker); err != nil {
 		return outcome{}, err
 	}
+	behaviorMs := time.Since(at).Milliseconds()
 
+	at = time.Now()
 	sentimentModel := ""
-	scored := 0
+	scoredThisRun := 0
 	if !cfg.skipSentiment {
-		sentimentModel, scored, err = scoreSentiment(ctx, s, cfg, talker)
+		sentimentModel, scoredThisRun, err = scoreSentiment(ctx, s, cfg, talker)
 		if err != nil {
 			return outcome{}, err
 		}
 	}
+	sentimentMs := time.Since(at).Milliseconds()
 
+	at = time.Now()
 	written, err := writeReport(ctx, s, cfg, talker, sentimentModel)
 	if err != nil {
 		return outcome{}, err
 	}
+	renderMs := time.Since(at).Milliseconds()
 
 	messages, err := s.CountMessages(ctx, talker)
 	if err != nil {
 		return outcome{}, err
 	}
-	analyzable, err := s.CountAnalyzable(ctx, talker)
+	// Read from the same place the report reads, so the line the user sees and
+	// the coverage the report states cannot disagree.
+	coverage, err := s.SentimentCoverage(ctx, talker, sentimentModel)
 	if err != nil {
 		return outcome{}, err
 	}
@@ -298,11 +326,16 @@ func execute(ctx context.Context, cfg options) (outcome, error) {
 		Updated:        imported.Updated,
 		Skipped:        imported.Skipped,
 		Messages:       messages,
-		Analyzable:     analyzable,
-		Scored:         scored,
-		Partial:        scored < analyzable,
+		Scored:         scoredThisRun,
+		Coverage:       coverage.Scored,
+		Total:          coverage.Total,
+		Partial:        coverage.Scored < coverage.Total,
 		ReportPath:     cfg.outPath,
 		ReportBytes:    written,
+		IngestMs:       ingestMs,
+		BehaviorMs:     behaviorMs,
+		SentimentMs:    sentimentMs,
+		RenderMs:       renderMs,
 	}}, nil
 }
 
