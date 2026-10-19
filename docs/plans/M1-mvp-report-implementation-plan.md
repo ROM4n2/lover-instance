@@ -37,6 +37,25 @@
 | spec §指标体系 M1 明列但全计划无产出的指标（emoji 频率 / 发起方占比 / 每日首末条 / 话轮平衡 / DUTIR 7 类占比 + 雷达） | **全部补齐**（Task 9 + Task 11），无一项降级为 Out of Scope |
 | `.gitignore` 例外、`uvicorn app.main:app` 无对应模块级 `app`、`RejectSyncedPath` 死代码、未定义的 `Result`/`Health`/`Progress`、`echarts-wordcloud` 许可证记成 MIT | 逐条修正（Task 4 / 11 / 12 / 14） |
 
+### 执行期偏离（2026-10-20，Task 1–15 实施后回填）
+
+计划是写在上游任务之前的，实施过程中有若干接口形状被证实更好或不得不改。以下逐条回填，**以代码为准**——凡与本表单不符的计划正文，一律按本表读：
+
+| 计划原文 | 实际实现 | 原因 |
+| --- | --- | --- |
+| `RebuildBehaviorMetrics(ctx, talker, modelVersion)` | `RebuildBehaviorMetrics(ctx, talker) error`，**返回 error 而非 nil** | 行为指标没有 `model_version` 维度可用（只有 `behavior-v1` 一个值），形参是死参数 |
+| Task 11 从 `daily_stats` 两行各取所需 | `Store.BehaviorMetrics(ctx, talker)` **重算后返回结构体**，`daily_stats` 只服务 Dashboard | 同一份日聚合由两条派生路径产出会静默分歧，而这正是本计划反复强调的失效形态；报告只认一条 |
+| `SaveSentimentScores` + `AddTokenCounts` 两个接口 | 合并为 `SaveScoredBlock(ctx, talker, modelVersion, period, rows, selfTokens, partnerTokens)`，**一个事务** | 分数与词频必须同一事务落地：词频按 `cnt = cnt + excluded.cnt` 累加，靠 anti-join 保证每块只写一次，分开写就可能在崩溃后只写一半 |
+| Task 10 传 `[]nlp.Result` 给 store | `[]store.SentimentRow` | 分层：store 不该依赖 nlp 客户端的类型 |
+| `BehaviorMetrics` 无区间字段 | 增加 `RangeStartMs` / `RangeEndMs` | 报告要写明覆盖区间，否则读者不知道这份报告对应哪段时间 |
+| 计划未列 `SentimentTotals` / `WordFrequencies` / `EmotionDistribution` | store 新增这三个读接口 | Task 11 需要它们；`SentimentTotals` 从逐条分数算极性，不依赖 `RebuildSentimentMetrics` 是否已跑 |
+| Task 9 的 `DailyFirstLastCoverage` | **取消**，改为 `DailyRow.FirstIsSelf` / `LastIsSelf` + 报告侧汇总 | 覆盖率概念多余；报告直接给「我开场/收尾各多少天」 |
+| `ExternalRefs(html []byte) ([]string, error)` | `ExternalRefs(html []byte) []string` | 纯函数，无可失败之处；返回 error 只会让调用点写 `if err != nil` 的死分支 |
+| `/health` 只报 `{status, model_loaded}` | 增加 `model_version`（加载中为 `null`） | 每条分数都以某个 model_version 入库并被报告印给读者，调用方必须从**持有词典的那个进程**取版本号；在 Go 侧再写一份常量就是第二个事实源 |
+| `/score` 响应里的 `model_version` 只解码不校验 | `checkAlignment` 校验回显版本，不一致则整块失败 | 否则会把这批分数记在一个并没有产出它们的版本号下 |
+| `tokenize()` 同时充当打分与计数视图 | 新增 `countable_tokens()` 供计数，**打分视图不变** | 打分的程度/否定窗口按 token 位置计距，从那条流里删 token 会让每个命中悄然靠近修饰词、改变极性 |
+| File-Occupancy 表称 Task 10 修改 `metrics.go` | Task 10 新增 `sentiment_rows.go`，**未触碰 `metrics.go`** | 原表预判失准；`metrics.go` 只被 Task 9 写过 |
+
 ### [实测] DSN 形态（本机跑 `modernc.org/sqlite` v1.58.0 得出，非推测）
 
 对 5 种路径形态（普通 / 含空格 / 含中文 / 含中文+空格 / 含 `#`）逐一实测，判据是**打开后 `PRAGMA database_list` 解析出的文件路径必须等于预期路径**：
@@ -73,7 +92,7 @@
 
 | 文件 | 首个创建者 | 后续修改者 | 约束 |
 | --- | --- | --- | --- |
-| `internal/store/metrics.go` | Task 9 | Task 10 | Task 10 必须等 Task 9 提交后再改 |
+| `internal/store/metrics.go` | Task 9 | 无（**实测 Task 10 未触碰，改为新增 `sentiment_rows.go`**） | Task 9 提交后其他任务不改本文件 |
 | `internal/store/messages.go` | Task 2 | Task 3（加 `ingest_state.go`）、Task 10（加 `sentiment_rows.go`） | 后两者为**新文件**，不改 Task 2 的实现 |
 | `backend-go/go.mod` | Task 1（加 `modernc.org/sqlite`） | 无 | 其余任务禁止再加依赖 |
 | `internal/report/` | Task 11（model/collect） | Task 12（assets）、Task 13（render/templates） | 三者文件不重叠，但 Task 13 消费前两者的产物 |
@@ -762,13 +781,18 @@
 - Produces: 验收结论 + 报告产物路径
 
 **验收标准（MUST ALL，逐条对齐 spec §指标体系 M1）:**
-- [ ] `go test ./...` 全绿；`pytest fixtures/ -q` 与 `nlp-service` 测试全绿。
-- [ ] 用 `workmem/evidence/full/wechat_messages.json`（32624 条真实消息）跑通 CLI（**不手动传 `--talker`**，验证自动推断路径）。
-- [ ] 产出 `report.html`：**双击可在浏览器打开**、**断网仍完整渲染**、**零外部请求**（判据是 `report.ExternalRefs(html)` 返回空，**不是** `grep -cE 'https?://'`——后者在内联 echarts 上必然 ≥6）。
-- [ ] 报告含且**非空**：核心统计卡片、24×7 热力图、双方词云、表情频率、会话类指标（发起方占比 / 每日首末条 / 话轮平衡）、情感基线（7 类占比 + 情绪雷达 + 模型眼中的正负消息比）、被排除类型分布、**固定免责面板**。
-- [ ] 隐私复查：`git status` 中无 `*.db` / `workmem/` / `*.report.html`；`git check-ignore` 对 `nlp-service/data/` 下的文件返回**非 0**（证明词典确实入库）；日志抽查无 content/talker 字面值。
-- [ ] 记录报告文件体积与各阶段耗时到 `M1-ACCEPTANCE.md`。
-- [ ] 逐条比对 spec §指标体系 M1，**未达成项如实记录、不假绿**。
+- [x] `go test ./...` 全绿；`pytest fixtures/ -q` 与 `nlp-service` 测试全绿。（11 + 38 passed）
+- [x] 用 `workmem/evidence/full/wechat_messages.json`（32624 条真实消息）跑通 CLI（**不手动传 `--talker`**，验证自动推断路径）。
+- [~] 产出 `report.html`：**零外部请求** ✅（判据是 `report.ExternalRefs(html)` 返回空，**不是** `grep -cE 'https?://'`——后者在内联 echarts 上必然 ≥6，实测 6 处命中）；**双击可在浏览器打开 + 断网渲染** ⚠️ **本机未安装任何浏览器，未能验证**，需用户手动确认。
+- [x] 报告含且**非空**：核心统计卡片、24×7 热力图、双方词云、表情频率、会话类指标（发起方占比 / 每日首末条 / 话轮平衡）、情感基线（7 类占比 + 情绪雷达 + 模型眼中的正负消息比）、被排除类型分布、**固定免责面板**。
+- [x] 隐私复查：`git status` 中无 `*.db` / `workmem/` / `*.report.html`；`git check-ignore` 对 `nlp-service/data/` 下的文件返回**非 0**（证明词典确实入库）；日志抽查无 content/talker 字面值。
+- [x] 记录报告文件体积与各阶段耗时到 `M1-ACCEPTANCE.md`。
+- [x] 逐条比对 spec §指标体系 M1，**未达成项如实记录、不假绿**。
+
+> **验收结果（2026-10-20）**：见 [workmem/evidence/M1-ACCEPTANCE.md](../../workmem/evidence/M1-ACCEPTANCE.md)（本地文件，`workmem/` 已 ignore）。
+> 真实数据跑通并**暴露 4 个种子数据构造不出的缺陷**，全部先补失败测试再修：情绪中性桶的两种口径打架、话轮平衡进度条渲染出 126.8%/−26.8%、续跑把「已完成」报成「部分覆盖」、词云里 `，` 排第三。
+> 全量运行与续跑运行产出的报告**逐字节相同**；报告 1,088,612 字节；单文件内联后无需网络。
+> **未验证**：浏览器渲染（无浏览器）与断网渲染，留给用户；词云插件在 Node SSR 下无法验证注册。**未达成**：spec 的「日均月趋势」（计划 D4 亦未列，属既有缺口）。
 
 **Subagent Prompt Scaffold (for /dfs-exec):**
 > "Execute Task 15: M1 端到端验收。
