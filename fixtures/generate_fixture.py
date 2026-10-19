@@ -1,6 +1,10 @@
-"""合成语料 fixture 生成器 — canonical two-person chatlog payload generator.
+"""合成语料 fixture 生成器 — chatlog-keeper 导出格式的双人聊天语料。
 
-Pure stdlib (json/random only). A fixed seed yields byte-identical output.
+字段名与消息类型码取自 M0 实测：对微信 4.1.9.30 的一份 chatlog-keeper 0.3.7
+真实导出（32624 条）逐字段核对所得，不是设计阶段的假设。产物可直接喂给
+backend-go/internal/source/chatlogkeeper。
+
+纯标准库（json/random only）。固定 seed 产出字节级稳定的文件。
 """
 import json
 import random
@@ -8,11 +12,38 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-REQUIRED_FIELDS = ("seq", "time", "talker", "sender", "isSelf", "type", "subType", "content")
+# chatlog-keeper 实测字段。server_id 是微信原生消息 ID（M0 实测 32624 条中
+# 3 条为 null），source_offset 是导出游标（实测 100% 非空且唯一），二者共同
+# 构成 canonical 唯一键：server_id 优先，source_offset 兜底。
+REQUIRED_FIELDS = (
+    "ts", "sender", "sender_wxid", "chat_room", "conversation_id", "content",
+    "msg_type", "is_self", "account_id", "thread_id", "server_id",
+    "source_offset", "conversation_type", "is_group_chat",
+)
 
-SELF_SENDER = "wxid_self_a"   # speaker A: fast, always positive
-PEER_SENDER = "wxid_peer_b"   # speaker B: often slow, always negative
-TALKER = "lover_instance_chat"
+REQUIRED_FLAGS = ("撤回消息", "系统消息", "红包", "图片语音占位", "自定义表情",
+                  "时间戳混用", "深夜消息", "同秒连发", "唯一键兜底")
+
+# 微信消息类型码实测值：1 文本 / 3 图片 / 34 语音 / 49 应用消息（含红包）/
+# 10000 系统消息。撤回在真实数据里就是以 10000 系统消息形式出现、正文含
+# "撤回"二字，因此 revoke 与 system 共用 10000，靠正文区分。
+MSG_TYPES = {
+    "text": 1,
+    "image": 3,
+    "voice": 34,
+    "redpacket": 49,
+    "system": 10000,
+    "revoke": 10000,
+}
+
+SELF_WXID = "wxid_self_a"     # speaker A: fast, always positive
+PEER_WXID = "wxid_peer_b"     # speaker B: often slow, always negative
+SELF_LABEL = "我"
+PEER_LABEL = "对方"
+ACCOUNT_ID = "wxid_self_a_abcd"
+THREAD_ID = "thread_" + "0" * 39
+CONVERSATION_ID = "wxid_peer_b"
+SERVER_ID_NULL_EVERY = 331   # deterministic sprinkle of null server_id rows
 
 POSITIVE_WORDS = ("开心", "喜欢", "爱你", "谢谢", "期待", "幸福", "太棒了", "想你")
 NEGATIVE_WORDS = ("难过", "好累", "好烦", "生气", "委屈", "无聊", "好困", "焦虑")
@@ -22,7 +53,8 @@ NEGATIVE_PHRASES = ("又加班到现在", "地铁上挤死了", "明天还要早
                     "晚饭又随便对付了", "回家的路好远", "工位空调又坏了")
 EMOJI_MARKS = ("[捂脸]", "[旺柴]")
 PLACEHOLDERS = {"image": "[图片]", "voice": "[语音]", "redpacket": "[微信红包] 手气最佳请接好"}
-SUBTYPES = {"text": 0, "image": 1, "voice": 2, "system": 10000, "revoke": 1, "redpacket": 49}
+SYSTEM_CONTENT = "系统消息：你已添加了对方，现在可以开始聊天"
+REVOKE_CONTENT = "你撤回了一条消息"
 
 SESSION_HOURS = (9, 11, 13, 15, 17, 19, 21, 22, 23, 23, 23)  # 23 deliberately repeated: 深夜 guarantee
 SLOW_REPLY_PROBABILITY = 0.6   # B replies >10min this often
@@ -59,22 +91,23 @@ def generate_chat(out_path, num_days=90, seed=42):
 
 
 def scenario_coverage(messages):
-    """Return the 8 required scenario marker flags for a corpus."""
+    """Return the 9 required scenario marker flags for a corpus."""
     if not messages:
         raise ValueError("scenario_coverage requires at least one message")
-    types = {message["type"] for message in messages}
+    types = {message["msg_type"] for message in messages}
     joined = "".join(message["content"] for message in messages)
-    units = {_time_unit(message["time"]) for message in messages}
-    hours = [((_to_ms(message["time"]) + CST_OFFSET_MS) // HOUR_MS) % 24 for message in messages]
+    units = {_time_unit(message["ts"]) for message in messages}
+    hours = [((_to_ms(message["ts"]) + CST_OFFSET_MS) // HOUR_MS) % 24 for message in messages]
     return {
-        "撤回消息": "revoke" in types,
-        "系统消息": "system" in types,
-        "红包": "redpacket" in types,
-        "图片语音占位": "image" in types and "voice" in types,
+        "撤回消息": "撤回" in joined,
+        "系统消息": "系统消息" in joined,
+        "红包": MSG_TYPES["redpacket"] in types,
+        "图片语音占位": MSG_TYPES["image"] in types and MSG_TYPES["voice"] in types,
         "自定义表情": all(mark in joined for mark in EMOJI_MARKS),
         "时间戳混用": {"s", "ms", "us"} <= units,
         "深夜消息": any(hour >= 23 for hour in hours),
         "同秒连发": _largest_identical_group(messages) >= 2,
+        "唯一键兜底": any(message["server_id"] is None for message in messages),
     }
 
 
@@ -101,7 +134,7 @@ def _emit_peer_turn(now_ms, messages, rng, is_session_open):
     when = now_ms + gap
     kind = _pick_peer_kind(rng)
     content = _peer_content(kind, rng)
-    _append_message(messages, when, PEER_SENDER, kind, content, rng)
+    _append_message(messages, when, PEER_WXID, PEER_LABEL, kind, content, rng)
     return when
 
 
@@ -110,7 +143,7 @@ def _emit_self_reply(now_ms, messages, rng):
     when = now_ms + rng.randint(5_000, 50_000)
     kind = _pick_self_kind(rng)
     content = _self_content(rng) if kind == "text" else PLACEHOLDERS[kind]
-    _append_message(messages, when, SELF_SENDER, kind, content, rng)
+    _append_message(messages, when, SELF_WXID, SELF_LABEL, kind, content, rng)
     return when
 
 
@@ -119,10 +152,11 @@ def _maybe_emit_insert(now_ms, messages, rng):
     if rng.random() >= INSERT_PROBABILITY:
         return now_ms
     kind = "system" if rng.random() < 0.5 else "revoke"
-    sender = PEER_SENDER if kind == "system" else SELF_SENDER
-    content = "系统消息：你已添加了对方，现在可以开始聊天" if kind == "system" else "你撤回了一条消息"
+    wxid = PEER_WXID if kind == "system" else SELF_WXID
+    label = PEER_LABEL if kind == "system" else SELF_LABEL
+    content = SYSTEM_CONTENT if kind == "system" else REVOKE_CONTENT
     when = now_ms + rng.randint(3_000, 15_000)
-    _append_message(messages, when, sender, kind, content, rng)
+    _append_message(messages, when, wxid, label, kind, content, rng)
     return when
 
 
@@ -131,7 +165,7 @@ def _emit_burst(now_ms, messages, rng):
     burst_ms = now_ms + rng.randint(10_000, 50_000)
     for index in range(BURST_SIZE):
         content = f"{POSITIVE_WORDS[index % len(POSITIVE_WORDS)]}！{EMOJI_MARKS[index % len(EMOJI_MARKS)]}"
-        _append_message(messages, burst_ms, SELF_SENDER, "text", content, rng, unit="ms")
+        _append_message(messages, burst_ms, SELF_WXID, SELF_LABEL, "text", content, rng, unit="ms")
     return burst_ms
 
 
@@ -175,16 +209,25 @@ def _self_content(rng):
     return text + rng.choice(EMOJI_MARKS)
 
 
-def _append_message(messages, when_ms, sender, kind, content, rng, unit=None):
+def _append_message(messages, when_ms, wxid, label, kind, content, rng, unit=None):
+    index = len(messages)
     payload = {
-        "seq": len(messages) + 1,
-        "time": _stamp(when_ms, rng, unit),
-        "talker": TALKER,
-        "sender": sender,
-        "isSelf": sender == SELF_SENDER,
-        "type": kind,
-        "subType": SUBTYPES[kind],
+        "ts": _stamp(when_ms, rng, unit),
+        "sender": label,
+        "sender_wxid": wxid,
+        "chat_room": CONVERSATION_ID,
+        "conversation_id": CONVERSATION_ID,
         "content": content,
+        "msg_type": MSG_TYPES[kind],
+        "is_self": wxid == SELF_WXID,
+        "account_id": ACCOUNT_ID,
+        "thread_id": THREAD_ID,
+        # A deterministic sprinkle of null server_id rows keeps the corpus
+        # exercising the source_offset fallback that M0 measured on real data.
+        "server_id": None if index % SERVER_ID_NULL_EVERY == 0 else f"7{index:018d}",
+        "source_offset": f"wechat_export:{index}",
+        "conversation_type": "direct",
+        "is_group_chat": False,
     }
     messages.append(payload)
 
@@ -223,7 +266,7 @@ def _to_ms(value):
 
 
 def _largest_identical_group(messages):
-    counts = Counter(_to_ms(message["time"]) for message in messages)
+    counts = Counter(_to_ms(message["ts"]) for message in messages)
     return max(counts.values())
 
 
