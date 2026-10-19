@@ -96,6 +96,10 @@ type BehaviorMetrics struct {
 	// AvgSelfLen and AvgPartnerLen are mean characters per message.
 	AvgSelfLen    float64
 	AvgPartnerLen float64
+	// RangeStartMs and RangeEndMs are the first and last message timestamps,
+	// which is what the report states as the period it covers.
+	RangeStartMs int64
+	RangeEndMs   int64
 }
 
 // SelfSpeaker and PartnerSpeaker are the two values recorded in
@@ -336,6 +340,8 @@ func foldBehavior(facts []messageFact) BehaviorMetrics {
 	if partnerMsgs > 0 {
 		metrics.AvgPartnerLen = float64(partnerChars) / float64(partnerMsgs)
 	}
+	metrics.RangeStartMs = facts[0].ts
+	metrics.RangeEndMs = facts[len(facts)-1].ts
 	return metrics
 }
 

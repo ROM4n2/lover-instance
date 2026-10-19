@@ -297,6 +297,27 @@ SELECT s.emotion, COUNT(*)
 	return distribution, nil
 }
 
+// SentimentTotals splits the scored messages by polarity sign.
+//
+// It counts from the per-message scores rather than summing the daily rollup,
+// so the polarity split is available even before RebuildSentimentMetrics has
+// run and cannot disagree with the per-message data it is derived from.
+func (s *Store) SentimentTotals(ctx context.Context, talker, modelVersion string) (positive, negative, neutral int, err error) {
+	err = s.db.QueryRowContext(ctx, `
+SELECT
+  COALESCE(SUM(CASE WHEN s.polarity > 0 THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN s.polarity < 0 THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN s.polarity = 0 OR s.polarity IS NULL THEN 1 ELSE 0 END), 0)
+  FROM sentiment s
+  JOIN messages m ON m.id = s.msg_id
+ WHERE m.talker = ? AND s.model_version = ?
+`, talker, modelVersion).Scan(&positive, &negative, &neutral)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("read sentiment totals: %w", err)
+	}
+	return positive, negative, neutral, nil
+}
+
 // WordFrequencies reads the accumulated token counts for one side.
 func (s *Store) WordFrequencies(ctx context.Context, talker, period string, isSelf bool) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx,
