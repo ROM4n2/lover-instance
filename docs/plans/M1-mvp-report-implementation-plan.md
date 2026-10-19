@@ -1,7 +1,7 @@
 # M1 端到端最小闭环 + 首份 report.html 实施计划
 
 > **Goal**: 打通「导入一个双人会话 → 落库 → 词典法分析 → 生成可双击打开、含热力图/词云/情感基线/免责面板的单文件 `report.html`」的端到端最小闭环。
-> **Tech Stack**: Go 1.26（`go.mod` 声明 1.24+）/ Python 3.11+ / SQLite（`modernc.org/sqlite`，免 CGO）/ Go `html/template` + `go:embed`。
+> **Tech Stack**: Go 1.26（`go.mod` 声明 `go 1.26.0`——该行由 `modernc.org/sqlite` 拉高；实测连 v1.58.0 自身都要求 ≥1.25，故原写的「Go 1.24+」是错的）/ Python 3.11+ / SQLite（`modernc.org/sqlite`，免 CGO）/ Go `html/template` + `go:embed`。
 > **Spec Reference**: [docs/specs/2026-09-08-wechat-relationship-analysis-design.md](../specs/2026-09-08-wechat-relationship-analysis-design.md) §数据模型 / §指标体系 M1 / §NLP 流水线 / §交付物；[ADR-0001](../adr/ADR-0001-compliance-sidecar-adapter.md)（合规边界与 M0 实测契约）/ [ADR-0002](../adr/ADR-0002-job-state-machine-chunked-batch.md)（块级批处理）/ [ADR-0003](../adr/ADR-0003-self-contained-html-report.md)（HTML 报告为分享交付物）/ [ADR-0004](../adr/ADR-0004-sentiment-honesty-cloud-llm-deny.md)（情感诚实化）
 > **Global Constraints**:
 > - **合规铁律**：本仓库不内置、不分发、不协助开发任何解密或密钥提取代码；数据只经 `internal/source/chatlogkeeper` 消费用户自行导出的 JSON。
@@ -9,7 +9,7 @@
 > - **数据正确性**：时间戳**固定东八区分桶**（`+8 hours`）；唯一键用 M0 冻结的 `server_id` + `source_offset` 兜底；增量走 **60s 回扫 + 自然键去重 upsert**，不得用水位整段跳过；**严禁零值 `http.Client{}`**。
 > - **错误处理零静默吞**：任何失败路径必须显式返回错误或落地为可见状态；ingest **绝不允许以"成功 0 行"收场**。
 > - **编码**：Python 入口 UTF-8 stdout（Windows GBK 免疫）；Go 卫语句提前返回、嵌套 ≤2 层。
-> - **依赖**：Go 仅新增 `modernc.org/sqlite`；Python 运行期仅 `fastapi` / `uvicorn` / `jieba`，**测试期另需 `pytest` 与 `httpx`**（`fastapi.testclient` 依赖它，而它不在 fastapi 基础安装内）。**任何任务的 RED 步骤之前，必须先执行一次显式安装**（见 Task 4 Step 0）。
+> - **依赖**：Go 仅新增 `modernc.org/sqlite`（**钉 v1.58.0**——DSN 形态是在这个版本上实测的；`go mod tidy` 会解析到更高的 v1.60.1，实测 DSN 行为一致，但既然已在该版本验证就以它为准）；Python 运行期仅 `fastapi` / `uvicorn` / `jieba`，**测试期另需 `pytest` 与 `httpx`**（`fastapi.testclient` 依赖它，而它不在 fastapi 基础安装内）。**任何任务的 RED 步骤之前，必须先执行一次显式安装**（见 Task 4 Step 0）。
 > **Branch**: **trunk 例外（显式声明）**——本仓库为纯本地仓库、**无远端**（`git remote -v` 为空，已实测），全部既有提交直接落在 `main`，PR 流程在本环境下不成立。故本计划所有任务在 `main` 上以原子提交推进，**不新建 feature 分支、不开 PR**。经用户 2026-10-20 明确确认。
 
 ---
