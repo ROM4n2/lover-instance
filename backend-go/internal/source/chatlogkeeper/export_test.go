@@ -1,8 +1,10 @@
 package chatlogkeeper
 
 import (
+	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -114,6 +116,37 @@ func TestToRaw_MapsEveryCanonicalColumn(t *testing.T) {
 	}
 }
 
+// TestToRaw_SeparatesTalkerFromSender uses a row whose conversation_id and
+// sender_wxid differ, which the shared sampleExport cannot: in a one-to-one
+// conversation the sample's row 0 carries the same wxid in both fields, so a
+// Talker/Sender swap in ToRaw is invisible to every other test in this repo.
+// This row makes the swap fail loudly, since a wrong Talker corrupts every
+// per-conversation grouping downstream.
+func TestToRaw_SeparatesTalkerFromSender(t *testing.T) {
+	const distinctRow = `[{"ts":1792166715.0,"sender":"Peer Display","sender_wxid":"wxid_the_sender",
+	  "chat_room":"wxid_the_talker","conversation_id":"wxid_the_talker","content":"hi",
+	  "msg_type":1,"is_self":false,"account_id":"wxid_self","thread_id":"thread-one",
+	  "server_id":"7058190743326509315","source_offset":"wechat_export:1",
+	  "conversation_type":"direct","is_group_chat":false}]`
+	rows, err := DecodeMessages(strings.NewReader(distinctRow))
+	if err != nil {
+		t.Fatalf("DecodeMessages(distinct row) error: %v", err)
+	}
+	raw, err := rows[0].ToRaw()
+	if err != nil {
+		t.Fatalf("ToRaw() error: %v", err)
+	}
+	if raw.Talker != "wxid_the_talker" {
+		t.Errorf("Talker = %q, want conversation_id %q", raw.Talker, "wxid_the_talker")
+	}
+	if raw.Sender != "wxid_the_sender" {
+		t.Errorf("Sender = %q, want sender_wxid %q", raw.Sender, "wxid_the_sender")
+	}
+	if raw.Talker == raw.Sender {
+		t.Error("Talker and Sender are equal: the two fields were sourced from one another")
+	}
+}
+
 // TestToRaw_LeavesSeqZero pins the seq-is-a-timestamp decision: the exporter has
 // no seq column, and copying ts into Seq would recreate the trap the project
 // forbids.
@@ -126,8 +159,20 @@ func TestToRaw_LeavesSeqZero(t *testing.T) {
 	if raw.Seq != 0 {
 		t.Errorf("Seq = %d, want 0: this exporter has no seq column", raw.Seq)
 	}
-	if raw.Extra["source_offset"] == raw.Seq || raw.MsgSvrID == raw.Time {
-		t.Error("identity fields appear to carry the timestamp; Seq must never be the message key")
+	// The timestamp must not leak into any identity field. The keys are rendered
+	// to strings before comparing: a bare `==` between an `any` holding a string
+	// and an int64 compares dynamic types first and is therefore unconditionally
+	// false, which is how this assertion used to pass without asserting anything.
+	for _, identity := range []struct{ name, key string }{
+		{"MsgSvrID", raw.MsgSvrID},
+		{`Extra["source_offset"]`, fmt.Sprint(raw.Extra["source_offset"])},
+	} {
+		if identity.key == raw.Time {
+			t.Errorf("%s = %q equals the row's time: an identity must never be the timestamp", identity.name, identity.key)
+		}
+		if identity.key == fmt.Sprint(raw.Seq) {
+			t.Errorf("%s = %q equals Seq: an identity must never be the seq column", identity.name, identity.key)
+		}
 	}
 }
 
@@ -202,6 +247,51 @@ func TestParseMessages_RejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+// TestDecodeMessages_RefusesAnythingButOneCompleteArray guards the silent
+// partial ingest defect. A decoder that stops at the first complete JSON value
+// reported no error for two concatenated arrays, for trailing garbage, and for
+// the bare literal `null` — so an export that was appended to instead of
+// overwritten would ingest only its first half, and a failed export would be
+// indistinguishable from a legitimately empty conversation. All of those must
+// fail loudly.
+func TestDecodeMessages_RefusesAnythingButOneCompleteArray(t *testing.T) {
+	const oneRow = `[{"ts":1792166715.0,"source_offset":"wechat_export:1"}]`
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"two concatenated arrays", oneRow + oneRow},
+		{"two arrays separated by whitespace", oneRow + "\n\n" + oneRow},
+		{"trailing garbage", oneRow + " garbage"},
+		{"trailing bare value", oneRow + `42`},
+		{"bare null document", `null`},
+		{"object instead of array", `{"messages":[]}`},
+		{"empty document", ``},
+		{"whitespace only", "  \n\t "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := DecodeMessages(strings.NewReader(tc.in))
+			if err == nil {
+				t.Fatalf("DecodeMessages(%d bytes) = %d row(s), nil error: want a loud failure", len(tc.in), len(rows))
+			}
+		})
+	}
+}
+
+// TestDecodeMessages_AcceptsEmptyArray is the other half of the guard above: a
+// legitimately empty export must still parse, so strictness cannot be bought by
+// rejecting empty input wholesale.
+func TestDecodeMessages_AcceptsEmptyArray(t *testing.T) {
+	rows, err := DecodeMessages(strings.NewReader(`[]`))
+	if err != nil {
+		t.Fatalf("DecodeMessages(`[]`) error: %v — an empty export is valid, not malformed", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("len(rows) = %d, want 0", len(rows))
+	}
+}
+
 func TestDecodeMessages_TreatsNullServerIDAsEmptyNotAnError(t *testing.T) {
 	rows := decodeSample(t)
 	if rows[1].ServerID != "" {
@@ -254,9 +344,11 @@ func TestParseMessages_SampleFixture(t *testing.T) {
 // file, so a plain `go test ./...` never depends on private data that exists on
 // only one machine.
 //
-// Reproduce (the export lives in the gitignored workmem/ tree):
+// Reproduce (the export lives in the gitignored workmem/ tree). `go test` runs
+// the test binary with its working directory set to this package, so the
+// relative path counts from backend-go/internal/source/chatlogkeeper:
 //
-//	CHATLOG_EVIDENCE=../workmem/evidence/full/wechat_messages.json \
+//	CHATLOG_EVIDENCE=../../../../workmem/evidence/full/wechat_messages.json \
 //	  go test ./internal/source/chatlogkeeper/ -run RealExport -v
 func TestParseMessages_RealExport(t *testing.T) {
 	path := os.Getenv("CHATLOG_EVIDENCE")
@@ -265,6 +357,12 @@ func TestParseMessages_RealExport(t *testing.T) {
 	}
 	file, err := os.Open(path)
 	if err != nil {
+		if !filepath.IsAbs(path) {
+			cwd, cwdErr := os.Getwd()
+			if cwdErr == nil {
+				t.Fatalf("open evidence export %q: %v (a relative CHATLOG_EVIDENCE resolves from the package directory %q; pass an absolute path to avoid the guesswork)", filepath.ToSlash(path), err, filepath.ToSlash(cwd))
+			}
+		}
 		t.Fatalf("open evidence export %q: %v", path, err)
 	}
 	defer file.Close()

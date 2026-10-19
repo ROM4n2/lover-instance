@@ -237,15 +237,15 @@ func TestFindWeChatPaths_ContainsCandidateSubstrings(t *testing.T) {
 	}
 }
 
-// TestFindWeChatPaths_ScansEveryPresentDrive guards the M0 target-box defect:
-// WeChat installed at D:\Program Files\Tencent\Weixin\Weixin.exe was reported
-// as "not installed" because the candidate list was hard-wired to C:.
-func TestFindWeChatPaths_ScansEveryPresentDrive(t *testing.T) {
-	roots := fixedDriveRoots()
-	if len(roots) == 0 {
-		t.Skip("no drive roots detected on this machine")
-	}
-	joined := strings.Join(FindWeChatPaths(), "\n")
+// TestDriveWeChatPaths_ExpandsEveryGivenRoot pins the expansion against an
+// explicitly supplied root list. The previous version of this test computed its
+// expectation from fixedDriveRoots(), the very function under test, so a
+// regression that returned only C:\ still satisfied it — the M0 target-box
+// defect (WeChat at D:\Program Files\Tencent\Weixin\Weixin.exe reported as "not
+// installed") could be reintroduced with a fully green suite.
+func TestDriveWeChatPaths_ExpandsEveryGivenRoot(t *testing.T) {
+	roots := []string{`C:\`, `D:\`, `Z:\`}
+	joined := strings.Join(driveWeChatPathsFor(roots), "\n")
 	for _, root := range roots {
 		for _, want := range []string{
 			filepath.Join(root, `Program Files\Tencent\Weixin\Weixin.exe`),
@@ -253,8 +253,95 @@ func TestFindWeChatPaths_ScansEveryPresentDrive(t *testing.T) {
 			filepath.Join(root, `xwechat_files`),
 		} {
 			if !strings.Contains(joined, want) {
-				t.Errorf("candidate paths missing %q for present drive %q:\n%s", want, root, joined)
+				t.Errorf("expansion for root %q is missing %q:\n%s", root, want, joined)
 			}
+		}
+	}
+}
+
+// repoVolume returns the volume this repository sits on, e.g. "D:". It is an
+// anchor independent of the code under test: on the M0 target box that volume
+// is D:, where WeChat actually lives.
+func repoVolume(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Skipf("os.Getwd: %v", err)
+	}
+	volume := filepath.VolumeName(cwd)
+	if volume == "" {
+		t.Skipf("working directory %q carries no volume name", cwd)
+	}
+	systemVolume := filepath.VolumeName(os.Getenv("SystemRoot"))
+	if systemVolume != "" && strings.EqualFold(systemVolume, volume) {
+		t.Skipf("repository is on the system drive %s, which the hard-coded defaults already cover; this anchor cannot discriminate here", volume)
+	}
+	return volume
+}
+
+// TestFindWeChatPaths_CoversTheDriveHostingThisRepo is the real guard for the
+// cross-drive defect: it asserts a candidate exists on a drive that is known to
+// be present for an independent reason (this repo lives there) rather than on
+// whatever fixedDriveRoots happens to report.
+func TestFindWeChatPaths_CoversTheDriveHostingThisRepo(t *testing.T) {
+	volume := repoVolume(t)
+	want := filepath.Join(volume+`\`, `Program Files\Tencent\Weixin\Weixin.exe`)
+	if joined := strings.Join(FindWeChatPaths(), "\n"); !strings.Contains(joined, want) {
+		t.Errorf("FindWeChatPaths() has no candidate on %s (want %q): the scan regressed to system-drive-only", volume, want)
+	}
+}
+
+// TestFixedDriveRoots_IncludesRepoDrive applies the same independent anchor to
+// the enumeration primitive.
+func TestFixedDriveRoots_IncludesRepoDrive(t *testing.T) {
+	volume := repoVolume(t)
+	roots := fixedDriveRoots()
+	if len(roots) == 0 {
+		t.Fatal("fixedDriveRoots() is empty: drive enumeration found nothing")
+	}
+	for _, root := range roots {
+		if strings.EqualFold(filepath.VolumeName(root), volume) {
+			return
+		}
+	}
+	t.Errorf("fixedDriveRoots() = %v, want it to contain %s", roots, volume)
+}
+
+// TestFixedDriveRoots_SkipsADriveThatBlocks guards the stall: a disconnected
+// mapped network drive makes os.Stat block for the SMB redirector timeout, and
+// fixedDriveRoots probes every letter A–Z before detectWeChat can return its
+// report. The seam stands in for the wedged share.
+func TestFixedDriveRoots_SkipsADriveThatBlocks(t *testing.T) {
+	origStat, origTimeout := statRoot, driveStatTimeout
+	t.Cleanup(func() { statRoot, driveStatTimeout = origStat, origTimeout })
+	driveStatTimeout = 150 * time.Millisecond
+
+	released := make(chan struct{})
+	t.Cleanup(func() { close(released) })
+	statRoot = func(path string) (os.FileInfo, error) {
+		if strings.HasPrefix(path, "Z:") {
+			// Stands in for a stat wedged inside the SMB redirector. It gives up
+			// eventually rather than never, so an implementation that drops the
+			// bound overshoots the assertion below instead of hanging the suite.
+			select {
+			case <-released:
+			case <-time.After(10 * time.Second):
+			}
+			return nil, os.ErrNotExist
+		}
+		return os.Stat(path)
+	}
+
+	start := time.Now()
+	roots := fixedDriveRoots()
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("fixedDriveRoots() took %v with one blocked drive, want it bounded near the %v drive deadline", elapsed, driveStatTimeout)
+	}
+	for _, root := range roots {
+		if strings.HasPrefix(root, "Z:") {
+			t.Errorf("fixedDriveRoots() = %v, want a drive that never answered to be dropped", roots)
 		}
 	}
 }

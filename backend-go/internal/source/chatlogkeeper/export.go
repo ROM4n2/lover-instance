@@ -13,7 +13,9 @@
 package chatlogkeeper
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -42,10 +44,37 @@ type Message struct {
 }
 
 // DecodeMessages reads a chatlog-keeper export: a JSON array of message rows.
+//
+// The read is strict on purpose, because both ways of being lax here lose data
+// quietly. A decoder that stops at the first complete JSON value accepts two
+// concatenated arrays — an export appended to rather than overwritten — and
+// hands back only the first one with no error; the same is true of trailing
+// garbage. And a document that is not an array at all (the literal `null` a
+// failed export leaves behind, an object wrapper) decodes to an empty result
+// indistinguishable from a legitimately empty conversation, so a caller cannot
+// tell "nothing was ever there" from "the file is broken". Both are refused.
 func DecodeMessages(r io.Reader) ([]Message, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read chatlog-keeper export: %w", err)
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("decode chatlog-keeper export: %w", io.ErrUnexpectedEOF)
+	}
+	if trimmed[0] != '[' {
+		return nil, fmt.Errorf("decode chatlog-keeper export: want a JSON array of message rows, document starts with %q", trimmed[0])
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	var messages []Message
-	if err := json.NewDecoder(r).Decode(&messages); err != nil {
+	if err := decoder.Decode(&messages); err != nil {
 		return nil, fmt.Errorf("decode chatlog-keeper export: %w", err)
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("decode chatlog-keeper export: unexpected trailing JSON after the message array (the file holds more than one document); refusing to ingest a partial export")
+		}
+		return nil, fmt.Errorf("decode chatlog-keeper export: trailing content after the message array: %w", err)
 	}
 	return messages, nil
 }

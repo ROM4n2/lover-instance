@@ -104,7 +104,7 @@ func DetectUniqueKey(raw RawChatlogMessage) (string, error) {
 		}
 		return key, nil
 	}
-	return "", fmt.Errorf("seq %d has no unique key: MsgSvrID and Extra id fields are all empty", raw.Seq)
+	return "", fmt.Errorf("seq %d has no unique key: MsgSvrID and the frozen Extra key fields %v are all empty", raw.Seq, uniqueKeyExtraFields)
 }
 
 // uniqueKeyExtraFields is the ordered, evidence-frozen set of Extra fields that
@@ -117,9 +117,13 @@ func DetectUniqueKey(raw RawChatlogMessage) (string, error) {
 // Only listed fields are consulted. An alphabetical sweep over whatever scalars
 // happened to be in Extra used to run here as a catch-all, and it is unsafe:
 // any constant field — the export carries account_id on every row — would win
-// the sweep and silently collapse distinct messages onto one key. Adding a new
+// the sweep and silently collapse distinct messages onto one key.
+//
+// A generic `id` column held the second slot here for a while, ranked above the
+// measured server_id, without ever having been observed in a real export. That
+// is the same guess this list exists to forbid, so it is gone: adding a new
 // source means adding its measured identity field here, never guessing.
-var uniqueKeyExtraFields = []string{"id", "server_id", "source_offset"}
+var uniqueKeyExtraFields = []string{"server_id", "source_offset"}
 
 // uniqueKeyCandidates lists identity candidates in priority order: the
 // dedicated MsgSvrID field first, then each frozen Extra field in list order.

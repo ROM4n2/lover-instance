@@ -142,24 +142,13 @@ func TestParseRaw_RejectsZeroValueRow(t *testing.T) {
 }
 
 func TestDetectUniqueKey_PrefersMsgSvrID(t *testing.T) {
-	raw := RawChatlogMessage{MsgSvrID: someMsgSvrID, Extra: map[string]any{"id": "lesser-id"}}
+	raw := RawChatlogMessage{MsgSvrID: someMsgSvrID, Extra: map[string]any{"source_offset": "wechat_export:1"}}
 	got, err := DetectUniqueKey(raw)
 	if err != nil {
 		t.Fatalf("DetectUniqueKey() error: %v", err)
 	}
 	if got != someMsgSvrID {
 		t.Errorf("DetectUniqueKey() = %q, want %q", got, someMsgSvrID)
-	}
-}
-
-func TestDetectUniqueKey_FallsBackToExtraIDWhenMsgSvrIDEmpty(t *testing.T) {
-	raw := RawChatlogMessage{Extra: map[string]any{"id": "wxid_fallback"}}
-	got, err := DetectUniqueKey(raw)
-	if err != nil {
-		t.Fatalf("DetectUniqueKey() error: %v", err)
-	}
-	if got != "wxid_fallback" {
-		t.Errorf("DetectUniqueKey() = %q, want %q", got, "wxid_fallback")
 	}
 }
 
@@ -205,15 +194,17 @@ func TestDetectUniqueKey_PrefersServerIDOverSourceOffset(t *testing.T) {
 // the old alphabetical catch-all: an export carries account_id on every row and
 // thread_id on every row, so a sweep that picked the first non-empty scalar
 // would hand back an account-level constant and collapse distinct messages onto
-// a single key. Unlisted scalars must never become the key.
+// a single key. Unlisted scalars must never become the key — including a
+// plausible-looking `id` column that was never measured on a real export.
 func TestDetectUniqueKey_IgnoresUnlistedExtraScalars(t *testing.T) {
 	cases := []struct {
 		name  string
 		extra map[string]any
 	}{
-		{"account-level constant", map[string]any{"id": "", "server_id": "", "account_id": "wxid_same_for_everything"}},
-		{"conversation-level constant", map[string]any{"id": "", "server_id": "", "thread_id": "thread_same_for_everything"}},
-		{"unrelated scalar", map[string]any{"id": "", "server_id": "", "nonce": 424242}},
+		{"account-level constant", map[string]any{"server_id": "", "account_id": "wxid_same_for_everything"}},
+		{"conversation-level constant", map[string]any{"server_id": "", "thread_id": "thread_same_for_everything"}},
+		{"unrelated scalar", map[string]any{"server_id": "", "nonce": 424242}},
+		{"unmeasured id column", map[string]any{"server_id": "", "id": "never-measured-anywhere"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,13 +230,16 @@ func TestDetectUniqueKey_ErrorsWhenAllCandidatesEmpty(t *testing.T) {
 }
 
 func TestDetectUniqueKey_SkipsSeqStyleTimestampMsgSvrID(t *testing.T) {
-	raw := RawChatlogMessage{MsgSvrID: seqStyleTimestamp, Extra: map[string]any{"id": "real-msg-id"}}
+	raw := RawChatlogMessage{
+		MsgSvrID: seqStyleTimestamp,
+		Extra:    map[string]any{"source_offset": "wechat_export:1"},
+	}
 	got, err := DetectUniqueKey(raw)
 	if err != nil {
 		t.Fatalf("DetectUniqueKey() error: %v", err)
 	}
-	if got != "real-msg-id" {
-		t.Errorf("DetectUniqueKey() = %q, want %q: seq-style timestamp must not be a primary key", got, "real-msg-id")
+	if got != "wechat_export:1" {
+		t.Errorf("DetectUniqueKey() = %q, want %q: seq-style timestamp must not be a primary key", got, "wechat_export:1")
 	}
 }
 

@@ -308,7 +308,14 @@ var (
 // driveWeChatPaths expands the relative candidates under every drive present
 // on this machine.
 func driveWeChatPaths() []string {
-	roots := fixedDriveRoots()
+	return driveWeChatPathsFor(fixedDriveRoots())
+}
+
+// driveWeChatPathsFor expands the relative candidates under the given roots.
+// The roots arrive as a parameter so the expansion can be asserted against an
+// explicit list: a test that recomputed them from fixedDriveRoots would be
+// self-referential and would pass even if the enumeration collapsed to C:\.
+func driveWeChatPathsFor(roots []string) []string {
 	perRoot := len(exeRelatives) + len(dataRelatives)
 	paths := make([]string, 0, len(roots)*perRoot)
 	for _, root := range roots {
@@ -322,15 +329,46 @@ func driveWeChatPaths() []string {
 	return paths
 }
 
+// driveStatTimeout bounds one root-existence check. fixedDriveRoots probes every
+// letter A–Z and runs from detectWeChat, before ProbeHTTP, so a stat that blocks
+// keeps the CLI from ever emitting its single JSON line — the same shape as
+// defect D1 in WeChatVersionExe. A disconnected mapped network drive (SMB
+// redirector timeout) or a not-ready optical drive is what makes os.Stat block.
+var driveStatTimeout = 2 * time.Second
+
+// statRoot is the injectable existence seam, so the bound can be exercised
+// without a real dead network drive on the test machine.
+var statRoot = func(path string) (os.FileInfo, error) {
+	return os.Stat(path)
+}
+
+// driveRootExists reports whether root is an existing directory, giving up
+// after driveStatTimeout. A Windows stat cannot be cancelled, so the probe runs
+// on its own goroutine and the deadline only stops us from *waiting* for it;
+// the goroutine ends whenever the redirector finally gives up. Leaking it is
+// the right trade for a one-shot CLI that must always print its report.
+func driveRootExists(root string) bool {
+	done := make(chan bool, 1)
+	go func() {
+		info, err := statRoot(root)
+		done <- err == nil && info.IsDir()
+	}()
+	select {
+	case ok := <-done:
+		return ok
+	case <-time.After(driveStatTimeout):
+		return false
+	}
+}
+
 // fixedDriveRoots lists the roots of the drives that exist, probing every
-// letter in turn and skipping any that is absent or unreadable rather than
-// failing the whole scan.
+// letter in turn and skipping any that is absent, unreadable or too slow to
+// answer rather than failing or stalling the whole scan.
 func fixedDriveRoots() []string {
 	roots := make([]string, 0, 4)
 	for letter := 'A'; letter <= 'Z'; letter++ {
 		root := string(letter) + `:\`
-		info, err := os.Stat(root)
-		if err != nil || !info.IsDir() {
+		if !driveRootExists(root) {
 			continue
 		}
 		roots = append(roots, root)
