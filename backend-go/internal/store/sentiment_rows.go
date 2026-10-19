@@ -1,0 +1,322 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+// AnalyzableMsgType is the only message type the sentiment pass reads.
+//
+// Everything else in the export is either not text (images, voice, video,
+// position) or not the sender's own words (the system notices the client
+// emits, which is where a revocation lands). Scoring those would feed the
+// lexicon strings nobody typed. The types left out are not discarded quietly:
+// ExcludedTypeCounts reports them so the report can say how much of the
+// conversation was out of scope.
+const AnalyzableMsgType = 1
+
+// AllPeriod is the word_freq period covering the whole conversation. Monthly
+// periods arrive with the topic-over-time chart in M4.
+const AllPeriod = "all"
+
+// SentimentRow is one message's score. The store owns this shape so it does
+// not have to depend on the NLP client's types to record a score.
+type SentimentRow struct {
+	MsgID     int64
+	Polarity  float64
+	Emotion   string
+	Intensity float64
+}
+
+// PendingMsg is a message still waiting to be scored.
+type PendingMsg struct {
+	ID      int64
+	Content string
+	IsSelf  bool
+	MsgType int
+}
+
+// Coverage reports how much of a conversation has been scored, so a report can
+// label a partial run instead of drawing a curve that looks complete.
+type Coverage struct {
+	Scored int
+	Total  int
+}
+
+// PendingMessages returns unscored analyzable messages for a conversation.
+//
+// The anti-join is the checkpoint: a block that has been written is excluded
+// from the next call, so restarting a long run costs nothing and re-running a
+// finished one does no work. Nothing is held open between calls — the design
+// forbids holding the single writer connection while an HTTP request is in
+// flight, and this query returns before any request is made.
+func (s *Store) PendingMessages(ctx context.Context, talker, modelVersion string, limit int) ([]PendingMsg, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("pending messages: limit must be positive, got %d", limit)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT m.id, COALESCE(m.content, ''), m.is_self, m.msg_type
+  FROM messages m
+ WHERE m.talker = ?
+   AND m.msg_type = ?
+   AND NOT EXISTS (
+         SELECT 1 FROM sentiment s
+          WHERE s.msg_id = m.id AND s.model_version = ?
+       )
+ ORDER BY m.ts ASC, m.id ASC
+ LIMIT ?
+`, talker, AnalyzableMsgType, modelVersion, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read pending messages: %w", err)
+	}
+	defer rows.Close()
+
+	var pending []PendingMsg
+	for rows.Next() {
+		var msg PendingMsg
+		var isSelf int
+		if err := rows.Scan(&msg.ID, &msg.Content, &isSelf, &msg.MsgType); err != nil {
+			return nil, fmt.Errorf("scan pending message: %w", err)
+		}
+		msg.IsSelf = isSelf == 1
+		pending = append(pending, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending messages: %w", err)
+	}
+	return pending, nil
+}
+
+// CountAnalyzable reports how many messages of this conversation the sentiment
+// pass is meant to cover.
+func (s *Store) CountAnalyzable(ctx context.Context, talker string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM messages WHERE talker = ? AND msg_type = ?`, talker, AnalyzableMsgType).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count analyzable messages: %w", err)
+	}
+	return count, nil
+}
+
+// SaveScoredBlock records one batch's outcome: the per-message scores and the
+// token counts they contributed.
+//
+// Scores and counts land in the same transaction on purpose. The counts are
+// accumulated with `cnt = cnt + excluded.cnt` rather than recomputed, so the
+// anti-join must be the only thing deciding which batches contribute — if a
+// batch were written twice the counts would double. One transaction makes that
+// atomic, and the anti-join makes it happen at most once.
+func (s *Store) SaveScoredBlock(ctx context.Context, talker, modelVersion, period string, rows []SentimentRow, selfTokens, partnerTokens map[string]int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin scored block: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := writeSentimentRows(ctx, tx, modelVersion, rows); err != nil {
+		return err
+	}
+	if err := addTokenCounts(ctx, tx, talker, period, true, selfTokens); err != nil {
+		return err
+	}
+	if err := addTokenCounts(ctx, tx, talker, period, false, partnerTokens); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit scored block: %w", err)
+	}
+	return nil
+}
+
+func writeSentimentRows(ctx context.Context, tx *sql.Tx, modelVersion string, rows []SentimentRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	statement, err := tx.PrepareContext(ctx, `
+INSERT INTO sentiment (msg_id, model_version, polarity, emotion, intensity)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (msg_id, model_version) DO UPDATE SET
+  polarity = excluded.polarity, emotion = excluded.emotion, intensity = excluded.intensity
+`)
+	if err != nil {
+		return fmt.Errorf("prepare sentiment insert: %w", err)
+	}
+	defer statement.Close()
+	for _, row := range rows {
+		if _, err := statement.ExecContext(ctx, row.MsgID, modelVersion, row.Polarity, row.Emotion, row.Intensity); err != nil {
+			return fmt.Errorf("insert sentiment for message %d: %w", row.MsgID, err)
+		}
+	}
+	return nil
+}
+
+func addTokenCounts(ctx context.Context, tx *sql.Tx, talker, period string, isSelf bool, counts map[string]int) error {
+	if len(counts) == 0 {
+		return nil
+	}
+	statement, err := tx.PrepareContext(ctx, `
+INSERT INTO word_freq (talker, period, is_self, word, cnt)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (talker, period, is_self, word) DO UPDATE SET cnt = cnt + excluded.cnt
+`)
+	if err != nil {
+		return fmt.Errorf("prepare word_freq upsert: %w", err)
+	}
+	defer statement.Close()
+	for word, count := range counts {
+		if count == 0 {
+			continue
+		}
+		if _, err := statement.ExecContext(ctx, talker, period, boolToInt(isSelf), word, count); err != nil {
+			return fmt.Errorf("accumulate word_freq for %q: %w", word, err)
+		}
+	}
+	return nil
+}
+
+// SentimentCoverage reports scored against analyzable.
+func (s *Store) SentimentCoverage(ctx context.Context, talker, modelVersion string) (Coverage, error) {
+	var coverage Coverage
+	err := s.db.QueryRowContext(ctx, `
+SELECT
+  (SELECT COUNT(*) FROM messages WHERE talker = ? AND msg_type = ?),
+  (SELECT COUNT(*)
+     FROM messages m
+     JOIN sentiment s ON s.msg_id = m.id AND s.model_version = ?
+    WHERE m.talker = ? AND m.msg_type = ?)
+`, talker, AnalyzableMsgType, modelVersion, talker, AnalyzableMsgType).Scan(&coverage.Total, &coverage.Scored)
+	if err != nil {
+		return Coverage{}, fmt.Errorf("read sentiment coverage: %w", err)
+	}
+	return coverage, nil
+}
+
+// ExcludedTypeCounts reports the message types the sentiment pass skipped, so
+// the omission is visible in the report rather than silent.
+func (s *Store) ExcludedTypeCounts(ctx context.Context, talker string) ([]TypeCount, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT msg_type, COUNT(*)
+  FROM messages
+ WHERE talker = ? AND msg_type <> ?
+ GROUP BY msg_type
+ ORDER BY msg_type ASC
+`, talker, AnalyzableMsgType)
+	if err != nil {
+		return nil, fmt.Errorf("read excluded type counts: %w", err)
+	}
+	defer rows.Close()
+	var counts []TypeCount
+	for rows.Next() {
+		var entry TypeCount
+		if err := rows.Scan(&entry.MsgType, &entry.Count); err != nil {
+			return nil, fmt.Errorf("scan excluded type count: %w", err)
+		}
+		counts = append(counts, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate excluded type counts: %w", err)
+	}
+	return counts, nil
+}
+
+// RebuildSentimentMetrics writes the sentiment columns into daily_stats for
+// this model version.
+//
+// These rows carry the model version, not "behavior-v1", so a day ends up with
+// one row of counts and another of polarity. That is the schema's design and
+// both are needed; BehaviorMetrics covers the counts and this covers the
+// polarity, and a reader must take them from both rows rather than picking one.
+func (s *Store) RebuildSentimentMetrics(ctx context.Context, talker, modelVersion string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin sentiment aggregate: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM daily_stats WHERE talker = ? AND model_version = ?`, talker, modelVersion); err != nil {
+		return fmt.Errorf("clear previous sentiment rows: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO daily_stats (talker, day, model_version, avg_polarity, pos_count, neg_count, updated_at)
+SELECT m.talker,
+       strftime('%Y-%m-%d', m.ts / 1000, 'unixepoch', '+8 hours'),
+       ?,
+       AVG(s.polarity),
+       SUM(CASE WHEN s.polarity > 0 THEN 1 ELSE 0 END),
+       SUM(CASE WHEN s.polarity < 0 THEN 1 ELSE 0 END),
+       datetime('now')
+  FROM sentiment s
+  JOIN messages m ON m.id = s.msg_id
+ WHERE m.talker = ? AND s.model_version = ?
+ GROUP BY m.talker, strftime('%Y-%m-%d', m.ts / 1000, 'unixepoch', '+8 hours')
+`, modelVersion, talker, modelVersion)
+	if err != nil {
+		return fmt.Errorf("aggregate sentiment by day: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sentiment aggregate: %w", err)
+	}
+	return nil
+}
+
+// EmotionDistribution counts scored messages per emotion label, which is what
+// the report's seven-emotion breakdown and radar are drawn from.
+func (s *Store) EmotionDistribution(ctx context.Context, talker, modelVersion string) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.emotion, COUNT(*)
+  FROM sentiment s
+  JOIN messages m ON m.id = s.msg_id
+ WHERE m.talker = ? AND s.model_version = ?
+ GROUP BY s.emotion
+`, talker, modelVersion)
+	if err != nil {
+		return nil, fmt.Errorf("read emotion distribution: %w", err)
+	}
+	defer rows.Close()
+	distribution := make(map[string]int)
+	for rows.Next() {
+		var emotion sql.NullString
+		var count int
+		if err := rows.Scan(&emotion, &count); err != nil {
+			return nil, fmt.Errorf("scan emotion count: %w", err)
+		}
+		key := "neutral"
+		if emotion.Valid && emotion.String != "" {
+			key = emotion.String
+		}
+		distribution[key] += count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate emotion distribution: %w", err)
+	}
+	return distribution, nil
+}
+
+// WordFrequencies reads the accumulated token counts for one side.
+func (s *Store) WordFrequencies(ctx context.Context, talker, period string, isSelf bool) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT word, cnt FROM word_freq WHERE talker = ? AND period = ? AND is_self = ?`,
+		talker, period, boolToInt(isSelf))
+	if err != nil {
+		return nil, fmt.Errorf("read word frequencies: %w", err)
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var word string
+		var count int
+		if err := rows.Scan(&word, &count); err != nil {
+			return nil, fmt.Errorf("scan word frequency: %w", err)
+		}
+		counts[word] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate word frequencies: %w", err)
+	}
+	return counts, nil
+}
