@@ -16,12 +16,14 @@ if hasattr(sys.stdout, "reconfigure"):
 from fastapi import FastAPI  # noqa: E402
 
 from app.health import router as health_router  # noqa: E402
+from app.score import router as score_router  # noqa: E402
 
 
 def create_app() -> FastAPI:
     """Factory so tests can build an isolated instance per test."""
     application = FastAPI(title="lover-instance nlp-service", version="m1")
     application.include_router(health_router)
+    application.include_router(score_router)
     return application
 
 
