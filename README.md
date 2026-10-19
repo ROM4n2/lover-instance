@@ -24,21 +24,38 @@
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| M0 | 取数 Spike + schema 证据（微信 4.1.9.30 被动取密钥实测、唯一键核实） | ⬜ 未开始 |
-| M1 | 端到端最小闭环 + 首份自包含 report.html（词典法，零模型） | ⬜ |
+| M0 | 取数 Spike + schema 证据（微信 4.1.9.30 被动取密钥实测、唯一键核实） | ✅ 完成（`chatlog-keeper` 导出 JSON 契约已冻结，32,624 条真实消息） |
+| M1 | 端到端最小闭环 + 首份自包含 report.html（词典法，零模型） | ✅ 代码完成并跑通真实数据；**浏览器渲染待用户确认** |
 | M2 | analysis_jobs 状态机 + 块级批处理 + SKEP 情感 | ⬜ |
 | M3 | Vue3 Dashboard（go:embed 托管、健康徽章、进度轮询） | ⬜ |
 | M4 | 本地 Ollama 叙事 + 话题词云时间线 | ⬜ |
 
-设计与决策见 [docs/specs/](docs/specs/) 与 [docs/adr/](docs/adr/)。
+设计与决策见 [docs/specs/](docs/specs/) 与 [docs/adr/](docs/adr/)；M1 的实施计划与执行期偏离见 [docs/plans/M1-mvp-report-implementation-plan.md](docs/plans/M1-mvp-report-implementation-plan.md)。
 
-## 快速开始（M0 后补充）
+## 快速开始（M1）
 
 ```bash
-# 1. 宿主机安装并运行解密 sidecar（用户自行选择，仓库不提供）
-# 2. 启动服务（sidecar 必须在宿主机，容器内取不到密钥）
-docker-compose up            # go-api + nlp-service + ollama；SIDECAR_URL=http://host.docker.internal:5030
-# 或本地分别运行：go run ./backend-go/cmd/server  ·  uvicorn nlp-service/app.main:app  ·  vite
+# 1. 在宿主机用你自己选择的工具导出聊天记录 JSON（本仓库不含导出/解密代码）。
+#    导出契约见 docs/adr/ADR-0001：字段 server_id / source_offset / ts / conversation_id /
+#    sender_wxid / msg_type / is_self / content。
+
+# 2. 启动词典基线 NLP 服务（M1 零模型，只加载自建词表）
+cd nlp-service && python -m uvicorn app.main:app --port 8000
+curl -s http://127.0.0.1:8000/health    # 期望 {"status":"ready",...,"model_version":"lexicon-hownet-v1"}
+
+# 3. 一条命令跑完导入 → 行为指标 → 情感打分 → 渲染报告
+cd backend-go && go build -o analyze ./cmd/analyze
+./analyze --export /path/to/wechat_messages.json --out report.html
 ```
 
-> 数据库文件、导出 JSON、报告、模型权重均已在 `.gitignore`，不会入库；请勿把项目放在 OneDrive/坚果云等同步盘目录下。
+CLI 退出码：`0` 完成 / `1` 执行失败 / `2` 命令行有误。成功时 stdout 是一行 JSON 摘要（条数、覆盖度、各阶段耗时、报告体积），**不含任何消息正文与会话标识**——只有会话指纹。
+
+常用参数：`--talker`（导出含多个会话时必填，单会话自动推断）、`--list-talkers`（列出已入库的会话键）、`--db`（默认 `%LOCALAPPDATA%\lover-instance\data.db`）、`--skip-sentiment`（只出行为报告，覆盖度会如实标注为不完整）、`--nlp-url`。
+
+### 三条容易踩的坑
+
+1. **改了 `backend-go/internal/report/templates/*.tmpl` 必须重新 `go build`。** 模板经 `go:embed` 编进二进制，不重编译就是在跑旧模板。
+2. **改了词表或分词后，已入库的词频不会自动回填。** 待办集按 anti-join 判定，已打分的块不会再进入待办集；需删掉 `word_freq` 的行或删库重跑。
+3. **数据库不要放在 OneDrive / 坚果云 / 百度网盘目录下。** CLI 会在建库前拒绝这类路径（Windows 的「已知文件夹移动」会把 `Documents` 悄悄重定向进 OneDrive）。
+
+> 数据库文件、导出 JSON、报告、模型权重均已在 `.gitignore`，不会入库。报告是自包含单页，打开时不产生任何网络请求（由 `report.ExternalRefs` 断言）。
