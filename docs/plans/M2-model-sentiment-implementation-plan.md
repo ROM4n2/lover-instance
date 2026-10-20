@@ -295,10 +295,29 @@
 - 状态迁移只允许 `queued→running→done/failed/canceled`，非法迁移报错。
 
 **TDD**
-- [ ] 红：并发两次 `Start` 只得到一个 id；kill 模拟（先写 running 再新建 store）后 `Resume` 能接着跑；非法迁移报错
-- [ ] 绿：实现
-- [ ] 变异：把单飞查询改成无条件插入，确认并发测试变红
-- [ ] 提交 `feat(jobs): persist the analysis job state machine`
+- [x] 红：并发两次 `Start` 只得到一个 id；kill 模拟（先写 running 再新建 store）后 `Resume` 能接着跑；非法迁移报错
+- [x] 绿：实现
+- [x] 变异：把单飞查询改成无条件插入，确认并发测试变红
+- [x] 提交 `feat(jobs): persist the analysis job state machine`（`a7d0691` + 评审判 REVISE 后的两轮返工 `98ae28a` / `c02fac4`；`go test ./...` **10 包 ok**，`internal/jobs` 为新增包）
+
+#### Task 5 执行期偏离（2026-10-20 回填，以代码为准）
+
+| 计划原文 | 实际实现 | 原因 |
+| --- | --- | --- |
+| Files 只列 `internal/jobs/*` + `cmd/analyze/main.go` | 另加 `internal/store/jobs.go`（SQL 层，因为 `Store.db` 是私有的）、`internal/analyze/pipeline.go`（新增 `RunSentimentProgress` 回调，`RunSentiment` 签名不变）、`cmd/analyze/main_test.go` | 分层：状态机不认识 SQL，store 不认识状态机语义 |
+| `Start(...) (Job, error)` | `Start(...) (Job, bool, error)`，第二返回值 = 本次是否新建 | CLI 需要区分「我拿到了槽位」与「别人正占着」。`created==false` 时 CLI **拒绝开第二遍打分**并以 `exitFailure` 退出 |
+| 「单飞靠 `uq_jobs_active` 兜底」 | 插入即决胜；**只有 SQLite 唯一约束冲突**才转「取回既有任务」（`store.IsUniqueViolation`），磁盘/IO 错误原样上抛 | 初版把所有插入错误都当「别人在跑」，会把基础设施故障伪装成正常状态 |
+| 未规定 `queued` 的来源 | `Start` 插入后**认领** `queued→running`；收养既有 `queued` 行时也认领 | 否则 `queued→running` 这条边全仓没有调用点，而 `Recover` 只扫 `running`——job 会永远停在 `queued` |
+| 「状态迁移只允许 `queued→running→done/failed/canceled`」 | `done` **只**接受 `running`；`failed`/`canceled` 额外接受 `queued`；`TransitionJob` 另加**目标状态白名单** | 「从未 running 的 job 也能 done」会掩盖「这一遍其实没跑」的 bug；而认领前就失败的那行必须能收口，否则永久占住单飞槽位 |
+| 未规定进度口径 | job 的 `done/total` 记**会话覆盖度**（`SentimentCoverage`），不是本次 run 的条数；每块回调与收尾各写一次 | ADR-0002 要绝对值。首次实现用「本次打分条数」，续跑/无可打分时会出现 `0/0` 或「跑完仍显示 24%」 |
+| 未规定取消路径 | 收尾写库用 `context.WithoutCancel(ctx)` + 5s 超时 | 评审判 **REVISE** 的红牌：原实现把**已取消的 ctx** 传给 `jobs.Finish`，`database/sql` 在拿连接前就返回 → job 永远停在 `running`、`canceled` 分支是死代码 |
+| 未规定 | `Cancel(ctx, s, id)` / `Resume(ctx, s, id)` 目前**只有测试调用**，没有生产调用方 | CLI 单进程没有取消入口；它们是给 Task 7 的任务 API 预留的接口面 |
+
+**已知缺口（ADR 层面，本轮刻意未改，需用户裁决）**：`Recover` **没有活性判定**——它把该 `(talker,kind)` 下所有 `running` 一律置 `interrupted`。因此**第二个并发 CLI** 会把正在跑的进程的任务抢过来，于是两个进程同时打分：反连接会让它们各写一部分块，但 `word_freq_v2` 是 `cnt = cnt + excluded.cnt` 累加，重叠块会**翻倍**（Task 4 刚消灭的那类错误以并发形式复现）。ADR-0002 只说「启动时把残留 running 置 interrupted」，本任务照字面实现。修法需要 `updated_at` 心跳新鲜度窗口或 owner pid + 启动时间，属于任务 API（Task 7 / M3）该定的事；**在单用户、一次只跑一个 CLI 的前提下不发生**。
+
+真实数据回归（2026-10-20）：真实库跑完整流水线 → `analysis_jobs` 落一行 `status=done, total=22093, done=22093`；报告与 Task 4 基线 `sha256 a1ae683d…` **逐字节相同**；summary JSON 字段与退出码未变。
+
+**构建噪音（不是缺陷）**：`gofmt -l .` 会列出 5 个改动前就存在的文件（`report/collect.go`、`store/{migrations,sentiment_rows,sentiment_rows_test,word_freq_v2_test}.go`）。`git ls-files --eol` 显示它们是**工作树 CRLF / 索引 LF** 的检出产物，不是格式问题；不要为本条去重排它们。
 
 ---
 
