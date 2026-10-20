@@ -27,7 +27,8 @@ SKEP/RoBERTa 在 CPU 上对数万条消息做情感批处理耗时 30–60 分�
 - 批大小 **128–256 条/批**（body <5MB）；**块级超时 5min**，`http.NewRequestWithContext` 传播取消（否则取消信号静默失效）；Go client 硬兜底 10min。
 - **每块一个独立短事务**写 sentiment/daily_stats ＝ 检查点；待办集用 anti-join：`messages WHERE talker=? AND id NOT IN (SELECT msg_id FROM sentiment WHERE model_version=?)`，重启后续跑只处理缺失块、跳过已打分。
 - 重试**仅块级**（connect reset/5xx/超时，指数退避 + full jitter，上限 2 次），**任务级不重试**（对 60min 任务重试＝再叠一个 60min）；契约写明 Python 纯函数无副作用。
-- 进度：`GET /api/jobs/:id` 2–5s 轮询（绝对值 `done/total`，不用百分比）；`DELETE /api/jobs/:id` 取消，worker 每块间检查 `ctx.Err()`；启动时把残留 `running` 置 `interrupted` 并可自动续跑。
+- 进度：`GET /api/jobs/:id` 2–5s 轮询（绝对值 `done/total`，不用百分比）；`DELETE /api/jobs/:id` 取消，worker 每块间检查 `ctx.Err()`；启动时把**心跳已过期**的残留 `running` 置 `interrupted` 并可自动续跑。
+- **活性判定（2026-10-20 修订）**：`running` 不等于"还活着"。启动时的回收只中断 `updated_at` 早于 `StaleAfter`（90s）的行，因此进程必须**独立于块**地心跳（节拍 10s），不能在块开始时才写一次——一个卡在 5 分钟块超时里的活进程，其行会看起来像死的。原措辞"启动时把残留 running 置 interrupted"是无条件的，那会让**第二个并发进程**把正在跑的任务抢走并让它与自己同时打分；`word_freq` 是累加语义，重叠块会翻倍。
 - **半成品门控**：情感图表 JOIN jobs 状态，未 done 显示"分析中 42%（12,340/29,000）"或只渲染已分析区间，绝不用半满数据画完整曲线。
 - SQLite：`WAL` + `busy_timeout(10000)` + `SetMaxOpenConns(1)`；**HTTP 期间不持有连接/事务**（先快照取 id 列表并 Close，再进入"HTTP→短事务写回"循环），否则唯一连接被长任务占满、所有读请求堵死。
 

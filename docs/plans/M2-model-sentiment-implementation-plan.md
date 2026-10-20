@@ -313,7 +313,8 @@
 | 未规定取消路径 | 收尾写库用 `context.WithoutCancel(ctx)` + 5s 超时 | 评审判 **REVISE** 的红牌：原实现把**已取消的 ctx** 传给 `jobs.Finish`，`database/sql` 在拿连接前就返回 → job 永远停在 `running`、`canceled` 分支是死代码 |
 | 未规定 | `Cancel(ctx, s, id)` / `Resume(ctx, s, id)` 目前**只有测试调用**，没有生产调用方 | CLI 单进程没有取消入口；它们是给 Task 7 的任务 API 预留的接口面 |
 
-**已知缺口（ADR 层面，本轮刻意未改，需用户裁决）**：`Recover` **没有活性判定**——它把该 `(talker,kind)` 下所有 `running` 一律置 `interrupted`。因此**第二个并发 CLI** 会把正在跑的进程的任务抢过来，于是两个进程同时打分：反连接会让它们各写一部分块，但 `word_freq_v2` 是 `cnt = cnt + excluded.cnt` 累加，重叠块会**翻倍**（Task 4 刚消灭的那类错误以并发形式复现）。ADR-0002 只说「启动时把残留 running 置 interrupted」，本任务照字面实现。修法需要 `updated_at` 心跳新鲜度窗口或 owner pid + 启动时间，属于任务 API（Task 7 / M3）该定的事；**在单用户、一次只跑一个 CLI 的前提下不发生**。
+**并发抢槽缺口（2026-10-20 已修补，见 `4d81155`）**：Task 5 首次实现照 ADR 原文「启动时把残留 running 置 interrupted」**无条件**回收，于是第二个并发 CLI 会把正在跑的进程标成 `interrupted` 并抢槽，两个进程同时打分时 `word_freq_v2` 的 `cnt = cnt + excluded.cnt` 累加会让重叠块**翻倍**。修补方式：`InterruptRunning` 增加 `staleFor` 窗口，`jobs.Recover` 用 `StaleAfter = 90s`；CLI 用**独立于块**的 10s 节拍心跳（`keepFresh`）保证活进程的行始终新鲜——块是一次可能卡到 5 分钟块超时的 HTTP 调用，只靠"块后心跳"会让活进程看起来是死的。ADR-0002 已同步修订。
+真实库实测：手工插一条新鲜 `running` 行 → CLI **拒绝**（exit 1，"its heartbeat is still current, so another process is still working on it"）；把该行老化 10 分钟 → CLI 报 `marked 1 interrupted job(s)` 并正常完成（新行 `done 22093/22093`）。
 
 真实数据回归（2026-10-20）：真实库跑完整流水线 → `analysis_jobs` 落一行 `status=done, total=22093, done=22093`；报告与 Task 4 基线 `sha256 a1ae683d…` **逐字节相同**；summary JSON 字段与退出码未变。
 
