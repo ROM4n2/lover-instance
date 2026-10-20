@@ -225,10 +225,24 @@
 - 模型版响应里 `emotion` 仍要填：二分类模型无 DUTIR 七类 → **填 `neutral`/`positive`/`negative` 之外的既有标签集**？→ 决定：模型版把 `emotion` 留空串，Go 侧按 `polarity` 符号归类；**不得伪造 DUTIR 类别**（ADR-0004）。
 
 **TDD**
-- [ ] 红：未知版本 → 4xx；`/health` 列出可用版本；模型版响应 `emotion == ""`
-- [ ] 绿：实现
-- [ ] 变异：让未知版本回落词典，确认红
-- [ ] 提交 `feat(nlp): score with a selected model version`
+- [x] 红：未知版本 → 4xx；`/health` 列出可用版本；模型版响应 `emotion == ""`
+- [x] 绿：实现
+- [x] 变异：让未知版本回落词典，确认红
+- [x] 提交 `feat(nlp): score with a selected model version`（`6bd673b` + 返工 `37dd191`，`pytest` 70→92）
+
+#### Task 3 执行期偏离（2026-10-20 回填，以代码为准）
+
+| 计划原文 | 实际实现 | 原因 |
+| --- | --- | --- |
+| Files 仅 `score.py` / `health.py` / 测试 | 新增 `app/model_registry.py`（版本白名单、sha256 钉版本、懒加载 + 模块锁）与其测试 | `main.py` 先 import health 再 import score，而 score 需要 health 的 `mark_lexicon_loaded`；把注册表放进任一方都会成环或污染职责 |
+| 未规定 polarity 的取值形状 | 二分类带外取**获胜侧概率**（`+p` / `-(1-p)`），带内 `0.0`；三分类 argmax `+conf/-conf/0.0`；`intensity=|polarity|` | 让 `|polarity|` 与置信度同单调，也不让落败类贡献幅度（0.51/0.49 该显弱） |
+| 未规定负类列如何定位 | 按模型自己的标签名匹配 `neg`，**不是** `1 - positive_index` | 三分类导出把 Neutral 放在中间，`1 - positive_index` 会把「敷衍」读成 −0.8 |
+| 未规定 503 | 权重不可用 → 503 `model_unavailable`，与未知版本 400 严格区分 | 一个是「改版本名」，一个是「稍后重试」，混用会让用户改错东西 |
+| 未规定 | `RETRYABLE_LOAD_ERRORS = (OSError, URLError, ModelIntegrityError)`；不变量违例（列数 <2、返回行数不符、三分类无 `neg` 列、空 spec）→ **500** + `logger.warning` 留痕 | 评审红牌：原实现 `except Exception` 把所有加载失败都伪装成可重试 503，而 Go 侧只读 `code` 不读 message、服务端零日志 → 配置错误永远查不到原因 |
+| 未规定 | 边界判定**复用** `onnx_encoder.apply_neutral_band`，不再自己写一份 | 两份实现在 `p == 0.5 ± tau` 上本来已经分歧（Task 1 的变异测试钉的是「等值仍表态」），留两份就是给「符号翻转」事故留门 |
+| 未规定 | `intensity=|polarity|` 与词典版 `intensity`（度数因子）**同名异义，跨版本不可比** | τ=0.45 让 erlangshen 的 intensity 实际只剩 ≈0.95–1.0 与 0 两档；Task 6 画曲线前必须先把这个口径写进报告说明 |
+
+**已知局限（Task 8 验收前必须复核）**：`erlangshen-110m-v1` 的 τ=0.45 是在 **agent-draft** 标签的 174 句集上选的，不是用户真值；`distilbert-multilingual-v1` 无中性带，事务/问句会被判成有情绪（实测「明天几点」→ `+0.351`）。真实权重复测（2026-10-20，服务在 8000）：词典 `+0.618/-0.539/0/0`、erlangshen `+0.995/-0.959/0/0`、distilbert `+0.961/-0.663/+0.351/0`，未知版本 → 400。
 
 ---
 
