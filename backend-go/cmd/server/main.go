@@ -2,9 +2,15 @@
 //
 // It is the long-lived counterpart of cmd/analyze: the same store, the same job
 // table and the same analysis code, reached over HTTP instead of a flag list.
-// It binds 127.0.0.1 on purpose — this is a single-user tool on one machine,
-// the data behind it is a plaintext chat log, and there is no login to put in
-// front of a wider bind.
+// It binds the loopback interface on purpose — this is a single-user tool on one
+// machine, the data behind it is a plaintext chat log, and there is no login to
+// put in front of a wider bind.
+//
+// Every default it registers comes from internal/app: the address, the NLP
+// service's URL and the database path are the same values cmd/analyze and
+// cmd/lover hand out, and a second copy of any of them here would be a second
+// thing to drift. A test in this package reads its own source to keep it that
+// way.
 //
 // Exit codes are part of the interface, and they match cmd/analyze: 0 for a
 // clean shutdown, 1 for a failure during the work, 2 for the command line
@@ -27,6 +33,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"lover-instance/backend-go/internal/api"
+	"lover-instance/backend-go/internal/app"
 	"lover-instance/backend-go/internal/store"
 )
 
@@ -34,13 +41,6 @@ const (
 	exitOK      = 0
 	exitFailure = 1
 	exitUsage   = 2
-
-	defaultNLPURL = "http://127.0.0.1:8000"
-
-	// defaultAddr is loopback and nothing else. "127.0.0.1:8787" rather than
-	// ":8787" because an empty host means every interface: on a laptop joined to
-	// a café's wifi that is a chat database answering requests from the room.
-	defaultAddr = "127.0.0.1:8787"
 
 	// The server's timeouts. A zero value in http.Server means "no limit",
 	// which for ReadHeaderTimeout is the slowloris shape: one client that
@@ -127,13 +127,17 @@ Serves the local dashboard API on %s. There is no login and no remote access:
 the process binds the loopback interface only.
 
 Flags:
-`, defaultAddr)
+`, app.DefaultDashboardAddr())
 		fs.PrintDefaults()
 	}
 
-	fs.StringVar(&cfg.dbPath, "db", defaultDBPath(), "path to the SQLite database")
-	fs.StringVar(&cfg.nlpURL, "nlp-url", defaultNLPURL, "base URL of the NLP service, probed by /api/health")
-	fs.StringVar(&cfg.addr, "addr", defaultAddr, "host:port to listen on; keep the host on 127.0.0.1, this is a local-only tool")
+	// The database is the one cmd/analyze writes: the two commands are two
+	// faces of one file, and a divergence would mean this server reporting on
+	// a database the CLI never wrote. Which file that is, is internal/app's
+	// answer — the local-only, unsynced location the design fixes.
+	fs.StringVar(&cfg.dbPath, "db", app.DefaultDBPath(), "path to the SQLite database")
+	fs.StringVar(&cfg.nlpURL, "nlp-url", app.DefaultNLPURL(), "base URL of the NLP service, probed by /api/health")
+	fs.StringVar(&cfg.addr, "addr", app.DefaultDashboardAddr(), "host:port to listen on; keep the host on 127.0.0.1, this is a local-only tool")
 
 	if err := fs.Parse(args); err != nil {
 		return options{}, flagParseError{err: err}
@@ -142,25 +146,9 @@ Flags:
 		return options{}, usagef("unexpected argument %q; every option is a flag", fs.Arg(0))
 	}
 	if cfg.addr == "" {
-		return options{}, usagef("--addr must name a host and port, for example %s", defaultAddr)
+		return options{}, usagef("--addr must name a host and port, for example %s", app.DefaultDashboardAddr())
 	}
 	return cfg, nil
-}
-
-// defaultDBPath is the local-only location the design fixes, and the same one
-// cmd/analyze defaults to: the two commands are two faces of one database, and
-// a divergence here would mean the server reporting on a database the CLI never
-// wrote. LOCALAPPDATA is where it goes on Windows precisely because it is not
-// synced by default.
-func defaultDBPath() string {
-	if root := os.Getenv("LOCALAPPDATA"); root != "" {
-		return filepath.Join(root, "lover-instance", "data.db")
-	}
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "lover-instance.db"
-	}
-	return filepath.Join(dir, "lover-instance", "data.db")
 }
 
 // execute opens the store, binds the socket and serves until ctx is cancelled.

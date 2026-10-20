@@ -4,10 +4,22 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"lover-instance/backend-go/internal/app"
 )
+
+// The default this command binds is internal/app's, not its own.
+//
+// TestParse_DefaultsComeFromTheSharedLayer compares values and
+// TestServerKeepsNoCopyOfADefault reads this package's own source. The two
+// together are what make the rule checkable: a hardcoded "127.0.0.1:8787"
+// computes the same value today and so passes the first, and only the second
+// one — which looks for the literal — turns red. That is the difference between
+// "the two agree" and "there is only one".
 
 // TestParse_DefaultAddrBindsLoopbackOnly is the command-line half of "no remote
 // access".
@@ -23,8 +35,8 @@ func TestParse_DefaultAddrBindsLoopbackOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse(nil) error: %v", err)
 	}
-	if cfg.addr != defaultAddr {
-		t.Errorf("addr = %q, want %q", cfg.addr, defaultAddr)
+	if cfg.addr != app.DefaultDashboardAddr() {
+		t.Errorf("addr = %q, want %q", cfg.addr, app.DefaultDashboardAddr())
 	}
 	if cfg.addr != "127.0.0.1:8787" {
 		t.Errorf("addr = %q, want 127.0.0.1:8787", cfg.addr)
@@ -71,5 +83,56 @@ func TestParse_DefaultsMatchTheCLIDatabase(t *testing.T) {
 	}
 	if filepath.Base(cfg.dbPath) != "data.db" {
 		t.Errorf("db = %q, want the file named data.db", cfg.dbPath)
+	}
+}
+
+// TestParse_DefaultsComeFromTheSharedLayer is hard constraint 1: the three
+// defaults this command registers are internal/app's, field for field. Under a
+// LOCALAPPDATA that names a real-looking directory, so a path default cannot
+// pass by collapsing to its fallback.
+func TestParse_DefaultsComeFromTheSharedLayer(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", filepath.Join("C:", "Users", "test", "AppData", "Local"))
+	cfg, err := parse(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parse(nil) error: %v", err)
+	}
+	if cfg.dbPath != app.DefaultDBPath() {
+		t.Errorf("--db default = %q, want app.DefaultDBPath() = %q", cfg.dbPath, app.DefaultDBPath())
+	}
+	if cfg.nlpURL != app.DefaultNLPURL() {
+		t.Errorf("--nlp-url default = %q, want app.DefaultNLPURL() = %q", cfg.nlpURL, app.DefaultNLPURL())
+	}
+	if cfg.addr != app.DefaultDashboardAddr() {
+		t.Errorf("--addr default = %q, want app.DefaultDashboardAddr() = %q", cfg.addr, app.DefaultDashboardAddr())
+	}
+}
+
+// TestServerKeepsNoCopyOfADefault reads this package's own source. A duplicated
+// default that happens to compute the same path today is still a duplication,
+// and the only way to catch one is to look for the literals it would contain.
+func TestServerKeepsNoCopyOfADefault(t *testing.T) {
+	forbidden := []string{
+		"LOCALAPPDATA", "UserConfigDir", "AppData",
+		"data.db", "report.html",
+		"http://127.0.0.1", ":8000", ":8787", ":11434",
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, literal := range forbidden {
+			if strings.Contains(string(body), literal) {
+				t.Errorf("%s contains %q: a default lives in internal/app/paths.go, not here", name, literal)
+			}
+		}
 	}
 }

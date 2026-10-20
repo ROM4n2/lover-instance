@@ -36,8 +36,14 @@ func DefaultOllamaURL() string { return "http://127.0.0.1:11434" }
 // here, beside the other defaults, because the command that starts that server
 // has to name the address to bind and the user has to be told where to point a
 // browser — and a second copy of "127.0.0.1:8787" is a second thing to drift.
-// cmd/server still carries its own copy today; the entry point that launches it
-// reads this one so the two agree by construction rather than by review.
+// cmd/server binds this one, as does the entry point that launches it, so the
+// two agree by construction rather than by review.
+//
+// It is loopback and nothing else. "127.0.0.1:8787" rather than ":8787" because
+// an empty host means every interface: on a laptop joined to a café's wifi that
+// is a plaintext chat database answering requests from the room. There is no
+// login in front of this server, so the interface it binds is the access
+// control.
 func DefaultDashboardAddr() string { return "127.0.0.1:8787" }
 
 // NarrativeCacheDir is where narrations are remembered. It sits beside the
