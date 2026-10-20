@@ -32,9 +32,36 @@ def test_health_returns_status_and_model_loaded():
     resp = client.get("/health")
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body.keys()) == {"status", "model_loaded", "model_version"}
+    assert set(body.keys()) == {"status", "model_loaded", "model_version", "available_versions"}
     assert body["status"] in {"loading", "ready"}
     assert isinstance(body["model_loaded"], bool)
+
+
+def test_health_lists_the_available_versions_without_loading_any_model(monkeypatch):
+    """The menu of versions, read from the registry, not from the weights.
+
+    `/health` is polled by the caller before every batch, so it must never start
+    a 100 MB download or an inference session: both `ensure_model` and `load`
+    are replaced with recorders that would notice.
+    """
+    from app import model_registry, model_store
+    from app.sentiment_lexicon import MODEL_VERSION
+
+    loads: list[str] = []
+    downloads: list[object] = []
+    monkeypatch.setattr(model_registry, "load", lambda version: loads.append(version))
+    monkeypatch.setattr(model_store, "ensure_model", lambda spec, **kwargs: downloads.append(spec))
+
+    client = TestClient(create_app())
+    for _ in range(3):
+        body = client.get("/health").json()
+
+    assert sorted(body["available_versions"]) == sorted(
+        [MODEL_VERSION, "erlangshen-110m-v1", "distilbert-multilingual-v1"]
+    )
+    assert body["model_version"] == MODEL_VERSION
+    assert loads == [], "/health must not load model weights"
+    assert downloads == [], "/health must not download model weights"
 
 
 def test_health_reports_the_lexicon_version_it_will_score_with():
