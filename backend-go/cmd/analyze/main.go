@@ -101,6 +101,7 @@ type options struct {
 	outPath       string
 	nlpURL        string
 	skipSentiment bool
+	takeOver      bool
 	listTalkers   bool
 	// sentimentVersion is which of the service's models scores this run. It
 	// is empty for "whatever the service reports as its default", which is
@@ -219,6 +220,7 @@ Flags:
 	fs.StringVar(&cfg.nlpURL, "nlp-url", defaultNLPURL, "base URL of the NLP service")
 	fs.StringVar(&cfg.sentimentVersion, "sentiment-version", "", "sentiment model version to score with; empty uses the default version the service reports on /health, and the choices are the versions listed there in available_versions")
 	fs.BoolVar(&cfg.skipSentiment, "skip-sentiment", false, "rebuild behavioral metrics only; the report will show sentiment coverage as incomplete")
+	fs.BoolVar(&cfg.takeOver, "take-over", false, "interrupt whatever job holds this conversation and start anyway; only correct when you know that run is dead — a live one would mean two scorers and doubled word counts")
 	fs.BoolVar(&cfg.listTalkers, "list-talkers", false, "print the conversation keys already stored, one per line, and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -521,7 +523,19 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		// heartbeat has stopped. So a slot still held here is held by a process
 		// that is alive, and saying so is what stops the reader from deleting a
 		// row — or waiting — for a job nobody is working on.
-		return "", 0, fmt.Errorf("a %s job already holds this conversation (job %d, status %q) and its heartbeat is still current, so another process is still working on it; this run is not starting a second scoring pass — if that process is gone, wait for its heartbeat to go stale (about %s) and re-run", jobKindSentiment, job.ID, job.Status, jobs.StaleAfter)
+		if !cfg.takeOver {
+			return "", 0, fmt.Errorf("a %s job already holds this conversation (job %d, status %q) and its heartbeat is still current, so another process is still working on it; this run is not starting a second scoring pass — if that process is gone, wait for its heartbeat to go stale (about %s) and re-run, or pass --take-over to say it is dead", jobKindSentiment, job.ID, job.Status, jobs.StaleAfter)
+		}
+		// The operator has asserted the other owner is gone. Say so out loud:
+		// this is the one path that can put two scorers on one conversation, and
+		// the only thing between that and doubled word counts is the person
+		// reading this line.
+		fmt.Fprintf(stderr, "analyze: taking over job %d (status %q) because --take-over was given; if that run is in fact alive, both will write and word counts will double\n", job.ID, job.Status)
+		taken, err := jobs.TakeOver(ctx, s, talker, jobKindSentiment, version)
+		if err != nil {
+			return "", 0, err
+		}
+		job = taken
 	}
 
 	// The beat and the per-block callback write the same row from two goroutines,

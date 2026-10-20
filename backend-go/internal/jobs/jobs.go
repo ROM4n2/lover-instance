@@ -246,6 +246,24 @@ func Recover(ctx context.Context, s *store.Store, talker, kind string) (int64, e
 	return interrupted, nil
 }
 
+// TakeOver clears the slot and starts a run, for the case a person has said the
+// previous process is gone.
+//
+// Recover only interrupts runs whose heartbeat has gone stale, which is what
+// stops a second process from stealing a live one. The cost is a wait of up to
+// StaleAfter after a kill. This is the explicit way out: the caller asserts the
+// other owner is dead, and the assertion is theirs to make, not the CLI's.
+func TakeOver(ctx context.Context, s *store.Store, talker, kind, modelVersion string) (Job, error) {
+	if _, err := s.InterruptSlot(ctx, talker, kind); err != nil {
+		return Job{}, fmt.Errorf("jobs: take over %q: %w", kind, err)
+	}
+	job, _, err := Start(ctx, s, talker, kind, modelVersion)
+	if err != nil {
+		return Job{}, err
+	}
+	return job, nil
+}
+
 // move performs a guarded transition and turns "the guard matched nothing" into
 // an error that names both states.
 func move(ctx context.Context, s *store.Store, id int64, from []string, to, errMsg string) error {

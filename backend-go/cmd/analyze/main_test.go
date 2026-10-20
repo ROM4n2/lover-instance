@@ -1037,3 +1037,52 @@ func TestDefaultDBPath_IsNotSynced(t *testing.T) {
 		t.Errorf("the default database path is rejected by the sync guard: %v", err)
 	}
 }
+
+// TestRun_TakesOverTheSlotWhenToldTheOtherRunIsDead is the escape hatch for the
+// wait that the heartbeat check introduces: kill a run and restart it inside the
+// staleness window and the slot still looks live. The flag only moves that
+// decision to the operator — the warning on stderr is part of the contract,
+// because this is the one path that can put two scorers on one conversation.
+func TestRun_TakesOverTheSlotWhenToldTheOtherRunIsDead(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if out := invoke(t, h.args("--skip-sentiment")...); out.code != exitOK {
+		t.Fatalf("behavioral run failed: %s", out.stderr)
+	}
+
+	held := openDB(t, h.db)
+	dead, err := held.InsertJob(ctx, "wxid_peer", "sentiment", "lexicon-hownet-v1")
+	if err != nil {
+		t.Fatalf("InsertJob() error: %v", err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatalf("close the store: %v", err)
+	}
+	if err := os.Remove(h.out); err != nil {
+		t.Fatalf("remove the previous report: %v", err)
+	}
+
+	srv := fakeNLPService(t, "lexicon-hownet-v1")
+	got := invoke(t, h.args("--nlp-url", srv.URL, "--take-over")...)
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitOK, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "taking over job") {
+		t.Errorf("stderr does not warn about the takeover: %q", got.stderr)
+	}
+
+	s := openDB(t, h.db)
+	var deadStatus, newStatus string
+	if err := s.DB().QueryRowContext(ctx, `SELECT status FROM analysis_jobs WHERE id = ?`, dead.ID).Scan(&deadStatus); err != nil {
+		t.Fatalf("read the old job row: %v", err)
+	}
+	if err := s.DB().QueryRowContext(ctx, `SELECT status FROM analysis_jobs ORDER BY id DESC LIMIT 1`).Scan(&newStatus); err != nil {
+		t.Fatalf("read the new job row: %v", err)
+	}
+	if deadStatus != "interrupted" {
+		t.Errorf("old job status = %q, want %q: the takeover must record that the previous run was abandoned", deadStatus, "interrupted")
+	}
+	if newStatus != "done" {
+		t.Errorf("new job status = %q, want %q", newStatus, "done")
+	}
+}

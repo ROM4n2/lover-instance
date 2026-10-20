@@ -285,6 +285,31 @@ UPDATE analysis_jobs
 	return affected, nil
 }
 
+// InterruptSlot clears whatever currently holds the (talker, kind) slot, without
+// waiting for a heartbeat to go stale.
+//
+// This is the escape hatch for a run that was killed and restarted inside the
+// staleness window: the heartbeat still looks live, so Recover leaves the row
+// alone and the next run is refused for up to StaleAfter. Interrupting
+// regardless is only safe when a person says the other process is gone — it is
+// exactly the unconditional interruption InterruptRunning refuses to do — so it
+// lives in its own method rather than as a special value of the window.
+func (s *Store) InterruptSlot(ctx context.Context, talker, kind string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE analysis_jobs
+   SET status = 'interrupted', updated_at = datetime('now')
+ WHERE talker = ? AND kind = ? AND status IN ('queued','running')
+`, talker, kind)
+	if err != nil {
+		return 0, fmt.Errorf("clear the %q job slot: %w", kind, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("clear the %q job slot: %w", kind, err)
+	}
+	return affected, nil
+}
+
 // jobNotOpen explains an UPDATE that required a queued or running job and
 // matched no row: either the job is gone, or it has already finished. Naming
 // the status is the difference between a message a reader can act on and one
