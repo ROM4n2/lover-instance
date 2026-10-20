@@ -5,11 +5,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"lover-instance/backend-go/internal/store"
+	"lover-instance/backend-go/internal/web"
 )
 
 // jobKindSentiment is the analysis_jobs.kind this package produces, watches and
@@ -104,7 +106,30 @@ func New(opts Options) *gin.Engine {
 	apiGroup.GET("/jobs/:id", jobStatusHandler(opts))
 	apiGroup.DELETE("/jobs/:id", jobCancelHandler(opts))
 	apiGroup.POST("/export", exportHandler(opts))
+
+	// Everything the API did not match is offered to the static dashboard,
+	// except /api itself. The check comes first and is the important part: an
+	// unknown /api path is a client mistake that must be told so in the JSON
+	// envelope it already parses, never answered with index.html. A SPA
+	// fallback that swallowed /api typos would turn "job_not_found" into a
+	// page of HTML the caller cannot read.
+	static := web.Handler()
+	r.NoRoute(func(c *gin.Context) {
+		if isAPIPath(c.Request.URL.Path) {
+			writeError(c, http.StatusNotFound, "not_found",
+				"no API endpoint exists at this path",
+				"check the path; the dashboard's endpoints are listed under /api/")
+			return
+		}
+		static.ServeHTTP(c.Writer, c.Request)
+	})
 	return r
+}
+
+// isAPIPath reports whether p names the API namespace, including the bare
+// "/api" and anything beneath it. Everything else is the dashboard's.
+func isAPIPath(p string) bool {
+	return p == "/api" || strings.HasPrefix(p, "/api/")
 }
 
 // requestLog prints one line per request carrying four fields and nothing else:

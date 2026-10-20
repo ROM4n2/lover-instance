@@ -55,6 +55,7 @@ venv/
 # === Node / 前端构建产物（dist 由 npm run build 生成，供 go:embed）===
 node_modules/
 frontend/dist/
+backend-go/internal/web/dist/
 
 # === Go 构建产物 ===
 bin/
