@@ -206,7 +206,11 @@ func TestExternalRefs_ReportsWhatItStrips(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			broken := strings.Replace(base, "</div>\n\n<script data-vendor", tc.injected+"</div>\n\n<script data-vendor", 1)
+			// The injection point is anchored on the vendor script tag alone, not
+			// on the blank line before it: a checkout with core.autocrlf turns that
+			// blank line into \r\n\r\n, and a test that silently stops finding its
+			// own injection point is worse than a failing one.
+			broken := strings.Replace(base, "<script data-vendor", tc.injected+"<script data-vendor", 1)
 			if broken == base {
 				t.Fatal("the injection point was not found, so this case tested nothing")
 			}
