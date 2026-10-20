@@ -96,3 +96,21 @@
 | 半成品被画成完整曲线 | 误导（M1/M2 反复强调的失效形态） | Task 6 的 `meta.partial` + CDP 断言 |
 | 前后端同时跑分析 | 词频/打分重叠 | `uq_jobs_active` 单飞 + 409 |
 | 长任务期间占住唯一 DB 连接 | 接口全阻塞 | 复用 M2 的「块间不持连接」，worker 与 API 共用 store 但每块短事务 |
+---
+
+## 执行期偏离（2026-10-20，Task 1–7 实施后回填，以代码为准）
+
+| 计划原文 | 实际实现 | 原因 |
+| --- | --- | --- |
+| Task 2 Files 只列 `internal/api/overview.go` | 另加 `internal/store/versions.go`（M2 已存在）、`internal/api/{jobs,export}.go` 拆三个提交 | 三个 Task 共用 `api.New` 路由表，按 Task 拆成三个可独立回滚的原子提交 |
+| Task 3「DELETE 调 `jobs.Cancel` 并取消 worker ctx」 | 有 worker 时**只**取消 ctx，由 worker 的 `Finish` 写 `canceled`；无 worker（CLI 起的/上个进程死了）才直接 `jobs.Cancel` | 两者都做时 job 行在 `Finish` 之前就已是 `canceled`，**收尾写失败将不可观测**——这正是 M2 那张红牌的形状 |
+| Task 3「进程退出 cancel worker，行留给下次 `Recover`」 | 退出时 cancel 并 `wg.Wait()`，worker 因此记 `canceled` | clean shutdown 下 `canceled` 比留 `running` 更诚实；kill -9（defer 不跑）仍走 `Recover` |
+| Task 5「磁盘查找 `frontend/dist`」 | 同时找 `frontend/dist`、`backend-go/internal/web/dist`、`internal/web/dist`、`../backend-go/internal/web/dist`、包相对 `dist`、二进制同级 `dist` | **验收时真踩到**：从 `backend-go/` 下构建/启动时前两组候选都会解析到错误路径，界面被判为"未安装" |
+| Task 6「情感视图不画曲线」 | `analysis.running` 时隐藏**全部**情感图（雷达/柱/趋势/对比） | 它们都由半满打分数据派生，只藏曲线等于让别的图撒谎 |
+| 未规定 | `view` 直接是 `report.View` 的 Go 字段名（`Meta`/`Summary`/`Emotion`…） | 加 json tag 会改内联报告的 JS 读键，属破坏 M1 验收产物；前端按大写键取值 |
+| 未规定 | 健康探测超时 **5s**（初版 2s） | 实测打分期间 `nlp-service` 的 `/health` 要 **2.9s**（排在批次后），2s 探测会在用户最需要看徽章时报「服务未启动」 |
+| 未规定 | `cmd/server` 默认 `gin.ReleaseMode`（`LOVER_GIN_DEBUG=1` 可开） | debug 模式每次启动刷一屏路由表与"切到 release"提醒，是双击工具的噪音 |
+
+**验收**：`workmem/evidence/M3-ACCEPTANCE.md`。13 个 Go 包全绿；dist 不入库（`git check-ignore` 双命中）；CDP 真实时间核验（概览 6 canvas、情感 3 canvas、门控 0 canvas）；断网 6 canvas 全出；日志 grep `wxid|talker=` 为 0；导出 1,103,199 字节；并发 `POST /api/jobs` 得 202 + 409。
+
+**未闭环**：Task 0 的评测标签仍是 `agent-draft`；前端无单元测试（计划 Out of Scope，靠 CDP 端到端核验）。
