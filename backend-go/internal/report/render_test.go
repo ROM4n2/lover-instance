@@ -55,7 +55,7 @@ func TestRender_IsSelfContained(t *testing.T) {
 func TestRender_DrawsEveryChartContainer(t *testing.T) {
 	html := renderedView(t)
 
-	for _, id := range []string{"heat", "wcSelf", "wcPartner", "emoSelf", "emoPartner", "radar", "emoBar", "types"} {
+	for _, id := range []string{"heat", "wcSelf", "wcPartner", "emoSelf", "emoPartner", "radar", "emoBar", "trend", "types"} {
 		if !strings.Contains(html, `id="`+id+`"`) {
 			t.Errorf("no container for the %q chart", id)
 		}

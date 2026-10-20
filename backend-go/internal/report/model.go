@@ -55,6 +55,66 @@ type EmotionView struct {
 	ScoredTotal   int
 }
 
+// VersionSplitView is one model version's reading of the same conversation.
+//
+// PositiveRatio has the same denominator as EmotionView.PositiveRatio — the
+// messages with a polarity at all, neutral excluded — so the two figures in the
+// report mean the same thing and can be read side by side.
+type VersionSplitView struct {
+	Version       string
+	Positive      int
+	Negative      int
+	Neutral       int
+	PositiveRatio float64
+}
+
+// ComparisonView is the side-by-side reading of two versions.
+//
+// Present is false when the conversation was scored by a single version. The
+// template hides the whole section on it rather than rendering a comparison of
+// a version with itself, which would read as perfect agreement.
+//
+// DisagreementRate is Differing over BothScored, and BothScored is not the
+// number of messages in the conversation: it is the number both versions
+// looked at. A rate over the wrong denominator would understate the gap
+// whenever one version covered less of the conversation than the other.
+type ComparisonView struct {
+	Present          bool
+	Current          VersionSplitView
+	Other            VersionSplitView
+	BothScored       int
+	Differing        int
+	DisagreementRate float64
+}
+
+// TrendPointView is one day of the rolling estimate, already judged.
+//
+// Drawable carries the store's verdict rather than a threshold re-derived here:
+// there is one definition of "enough samples" and it lives with the numbers.
+type TrendPointView struct {
+	Day      string
+	Mean     float64
+	StdDev   float64
+	Count    int
+	Drawable bool
+}
+
+// TrendView is the rolling curve plus the counts the chart and its caveats
+// need.
+//
+// Drawable and Thin partition the points: every point is one or the other, and
+// both are counted because a chart that silently dropped the thin ones would
+// leave a reader unable to tell "no messages" from "too few to draw". MeanLow
+// and MeanHigh bound the drawable points only, and are zero when there are
+// none — a range over points that were not drawn would describe nothing.
+type TrendView struct {
+	Points   []TrendPointView
+	Drawable int
+	Thin     int
+	MeanLow  float64
+	MeanHigh float64
+}
+
 // CoverageView states how much of the conversation the sentiment pass covered.
 type CoverageView struct {
 	Scored        int
@@ -123,7 +183,16 @@ type View struct {
 	Emoji      EmojiView
 	Emotion    EmotionView
 	Coverage   CoverageView
-	Disclaimer string
+	Comparison ComparisonView
+	Trend      TrendView
+	// EmotionSource names the model version the seven emotion labels came
+	// from. It is not always Meta.SentimentModelVersion: only the lexicon
+	// produces DUTIR labels, so a model-version report shows the lexicon's
+	// radar and has to say whose it is. Empty means no version produced any,
+	// and the template then draws no radar at all rather than faking seven
+	// categories out of a polarity sign (ADR-0004).
+	EmotionSource string
+	Disclaimer    string
 }
 
 // DisclaimerText is fixed. It is a constant rather than a field a caller fills

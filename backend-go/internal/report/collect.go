@@ -3,6 +3,7 @@ package report
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -40,15 +41,19 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
-	distribution, err := s.EmotionDistribution(ctx, talker, sentimentModelVersion)
+	versions, err := s.SentimentVersions(ctx, talker)
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
-	// The polarity rollup is read for its two judged buckets only. Its third
-	// bucket counts a different thing — polarity of zero rather than an unmatched
-	// emotion word — and emotionView takes that count from the distribution
-	// instead, so this one is deliberately discarded rather than passed along.
-	positive, negative, _, err := s.SentimentTotals(ctx, talker, sentimentModelVersion)
+	emotion, emotionSource, err := emotionBreakdown(ctx, s, talker, sentimentModelVersion, versions)
+	if err != nil {
+		return View{}, err
+	}
+	comparison, err := comparisonOf(ctx, s, talker, sentimentModelVersion, versions)
+	if err != nil {
+		return View{}, err
+	}
+	trendPoints, err := s.Trend(ctx, talker, sentimentModelVersion)
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
@@ -73,9 +78,14 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 		Heatmap:    heatmapOf(behavior),
 		Words:      WordsView{Self: topWords(selfTokens, false), Partner: topWords(partnerTokens, false)},
 		Emoji:      EmojiView{Self: topWords(selfTokens, true), Partner: topWords(partnerTokens, true)},
-		Emotion:    emotionView(distribution, positive, negative),
+		Emotion:    emotion,
 		Coverage:   CoverageView{Scored: coverage.Scored, Total: coverage.Total, Partial: coverage.Scored < coverage.Total, ExcludedTypes: excluded},
-		Disclaimer: DisclaimerText,
+		Comparison: comparison,
+		Trend:      trendView(trendPoints),
+		// The emotion section is not always the report's own version's work,
+		// and the template states whose work it is.
+		EmotionSource: emotionSource,
+		Disclaimer:    DisclaimerText,
 	}
 	return view, nil
 }
@@ -211,6 +221,204 @@ func emotionView(distribution map[string]int, positive, negative int) EmotionVie
 	}
 	if polarity := positive + negative; polarity > 0 {
 		view.PositiveRatio = float64(positive) / float64(polarity)
+	}
+	return view
+}
+
+// emotionBreakdown builds the seven-emotion section and names the version it
+// came from.
+//
+// Only the lexicon produces DUTIR labels. A model version records an empty
+// emotion for every message (Task 3 of the M2 plan), which the store folds into
+// the neutral bucket, so a report pinned to the model would draw seven zero
+// spokes — which reads as "this conversation had no emotion" rather than "this
+// version does not measure emotions". Showing the version that did produce
+// labels and naming it is the honest alternative; fabricating seven categories
+// out of the polarity sign is the dishonest one, and ADR-0004 forbids it.
+//
+// The polarity split printed beside the radar is read from the same version as
+// the labels, so that whole section describes one run rather than two.
+func emotionBreakdown(ctx context.Context, s *store.Store, talker, current string, versions []string) (EmotionView, string, error) {
+	distribution, err := s.EmotionDistribution(ctx, talker, current)
+	if err != nil {
+		return EmotionView{}, "", fmt.Errorf("report: %w", err)
+	}
+	source := current
+	if !hasEmotionLabels(distribution) {
+		source, distribution = "", nil
+		for _, version := range versions {
+			if version == current {
+				continue
+			}
+			candidate, err := s.EmotionDistribution(ctx, talker, version)
+			if err != nil {
+				return EmotionView{}, "", fmt.Errorf("report: %w", err)
+			}
+			// The first candidate in the store's sorted order wins, so the
+			// fallback is the same on every render.
+			if hasEmotionLabels(candidate) {
+				source, distribution = version, candidate
+				break
+			}
+		}
+	}
+
+	positive, negative := 0, 0
+	if source != "" {
+		// The polarity rollup is read for its two judged buckets only. Its
+		// third bucket counts a different thing — polarity of zero rather than
+		// an unmatched emotion word — and emotionView takes that count from the
+		// distribution instead, so this one is deliberately discarded rather
+		// than passed along.
+		positive, negative, _, err = s.SentimentTotals(ctx, talker, source)
+		if err != nil {
+			return EmotionView{}, "", fmt.Errorf("report: %w", err)
+		}
+	}
+	return emotionView(distribution, positive, negative), source, nil
+}
+
+// hasEmotionLabels reports whether a distribution holds at least one DUTIR
+// label. The neutral bucket is the failure to match an emotion word, so a
+// distribution holding nothing but neutral carries no emotion information.
+func hasEmotionLabels(distribution map[string]int) bool {
+	for _, label := range Emotions {
+		if distribution[label] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// comparisonOf builds the side-by-side section.
+//
+// It exists only when two versions scored the conversation. With one version
+// there is nothing to compare against, and a section comparing it with itself
+// would show a 0% disagreement rate — a claim, not an absence.
+func comparisonOf(ctx context.Context, s *store.Store, talker, current string, versions []string) (ComparisonView, error) {
+	if len(versions) < 2 {
+		return ComparisonView{}, nil
+	}
+	other, ok, err := otherVersion(ctx, s, talker, current, versions)
+	if err != nil {
+		return ComparisonView{}, err
+	}
+	if !ok {
+		return ComparisonView{}, nil
+	}
+	currentSplit, err := splitOfVersion(ctx, s, talker, current)
+	if err != nil {
+		return ComparisonView{}, err
+	}
+	otherSplit, err := splitOfVersion(ctx, s, talker, other)
+	if err != nil {
+		return ComparisonView{}, err
+	}
+	disagreement, err := s.Disagreement(ctx, talker, current, other)
+	if err != nil {
+		return ComparisonView{}, fmt.Errorf("report: %w", err)
+	}
+
+	view := ComparisonView{
+		Present:    true,
+		Current:    currentSplit,
+		Other:      otherSplit,
+		BothScored: disagreement.Both,
+		Differing:  disagreement.Differing,
+	}
+	// BothScored can be zero when the two versions scored disjoint messages,
+	// and 0/0 is not a rate: the section then shows the counts and no
+	// percentage rather than a confident 0%.
+	if disagreement.Both > 0 {
+		view.DisagreementRate = float64(disagreement.Differing) / float64(disagreement.Both)
+	}
+	return view, nil
+}
+
+// otherVersion picks the version the comparison column shows beside the current
+// one.
+//
+// Candidates are every version that scored this conversation except the
+// report's own. Preference goes to a candidate whose name does not contain the
+// current version's name and that produced DUTIR labels: a version whose name
+// embeds another's is a derivative of it — a re-run at a different threshold,
+// say — not an independent second opinion, and comparing the two would report
+// an agreement that is partly definitional. If no candidate meets both
+// conditions, the first one in the store's sorted order is used, so the choice
+// does not change between renders.
+func otherVersion(ctx context.Context, s *store.Store, talker, current string, versions []string) (string, bool, error) {
+	fallback := ""
+	haveFallback := false
+	for _, version := range versions {
+		if version == current {
+			continue
+		}
+		if !haveFallback {
+			fallback, haveFallback = version, true
+		}
+		if strings.Contains(version, current) {
+			continue
+		}
+		distribution, err := s.EmotionDistribution(ctx, talker, version)
+		if err != nil {
+			return "", false, fmt.Errorf("report: %w", err)
+		}
+		if hasEmotionLabels(distribution) {
+			return version, true, nil
+		}
+	}
+	return fallback, haveFallback, nil
+}
+
+// splitOfVersion reads one version's three polarity buckets.
+func splitOfVersion(ctx context.Context, s *store.Store, talker, version string) (VersionSplitView, error) {
+	positive, negative, neutral, err := s.SentimentTotals(ctx, talker, version)
+	if err != nil {
+		return VersionSplitView{}, fmt.Errorf("report: %w", err)
+	}
+	view := VersionSplitView{
+		Version:  version,
+		Positive: positive,
+		Negative: negative,
+		Neutral:  neutral,
+	}
+	if polarity := positive + negative; polarity > 0 {
+		view.PositiveRatio = float64(positive) / float64(polarity)
+	}
+	return view, nil
+}
+
+// trendView maps the store's points into the payload the chart reads.
+//
+// No point is dropped. A point that cannot be drawn is still a point — it is
+// the evidence that samples were too thin — so the view keeps it and lets the
+// chart mark it separately; dropping it here would make "not enough samples"
+// indistinguishable from "no messages", which the M2 plan calls out.
+//
+// MeanLow and MeanHigh bound the drawable points only, because they describe
+// the curve that was drawn. They stay zero when nothing is drawable.
+func trendView(points []store.TrendPoint) TrendView {
+	view := TrendView{Points: make([]TrendPointView, 0, len(points))}
+	for _, point := range points {
+		drawable := point.Drawable()
+		view.Points = append(view.Points, TrendPointView{
+			Day:      point.Day,
+			Mean:     point.Mean,
+			StdDev:   point.StdDev,
+			Count:    point.Count,
+			Drawable: drawable,
+		})
+		if !drawable {
+			view.Thin++
+			continue
+		}
+		if view.Drawable == 0 {
+			view.MeanLow, view.MeanHigh = point.Mean, point.Mean
+		} else {
+			view.MeanLow = math.Min(view.MeanLow, point.Mean)
+			view.MeanHigh = math.Max(view.MeanHigh, point.Mean)
+		}
+		view.Drawable++
 	}
 	return view
 }

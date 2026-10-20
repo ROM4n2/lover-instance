@@ -113,7 +113,8 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 
 <section>
   <h2>情绪分布</h2>
-  <p class="note">七类情绪来自词典规则匹配，仅覆盖被成功打分的消息；「未匹配」是没命中任何情绪词，不是平静。</p>
+  {{if .View.EmotionSource}}
+  <p class="note">七类情绪来自 {{.View.EmotionSource}}（词典规则匹配），仅覆盖被成功打分的消息{{if ne .View.EmotionSource .View.Meta.SentimentModelVersion}}。本次报告的情感模型是 {{.View.Meta.SentimentModelVersion}}，它不产出七类标签，所以这一节画的是 {{.View.EmotionSource}} 的判定，下面的正向占比也取自同一版{{end}}。「未匹配」是没命中任何情绪词，不是平静。</p>
   <div class="duo">
     <div id="radar" class="chart"></div>
     <div id="emoBar" class="chart"></div>
@@ -127,7 +128,73 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
     <span><i class="dot" style="background:#c53030"></i>负向</span>
     <span>中性/未匹配 {{.View.Emotion.NeutralCount}} 条，不计入该比例</span>
   </div>
+  {{else}}
+  <p class="note">当前版本不产出七类情绪，因此不画雷达图：没有任何已打分的版本留下「好 / 乐 / 哀 / 怒 / 惧 / 恶 / 惊」标签，而用极性符号伪造七类，会把「正向」当成一种情绪。极性分布见下方「情感走势」。</p>
+  {{end}}
 </section>
+
+<section>
+  <h2>情感走势</h2>
+  <p class="note">
+    每个点是「当天及之前 6 天」共 7 个日历日内所有已打分消息的极性均值，双方的消息合在一起算，不区分谁说的；所以点的条数是<b>窗口内</b>条数，不是当天条数。阴影是 ±1 SD（消息离散度，不是置信区间）：真正描述均值不确定性的标准误约为 SD / √条数，比这条带宽几十倍。均值含大量 0 极性中性消息，水平低位不等于关系平淡。
+  </p>
+  {{if .View.Trend.Drawable}}
+  <div id="trend" class="chart tall"></div>
+  <p class="note">可画 {{.View.Trend.Drawable}} 天，样本不足 {{.View.Trend.Thin}} 天；{{if ne .View.Trend.MeanLow .View.Trend.MeanHigh}}可画天的均值在 {{num2 .View.Trend.MeanLow}} 到 {{num2 .View.Trend.MeanHigh}} 之间{{else}}可画天的均值为 {{num2 .View.Trend.MeanLow}}{{end}}（-1 最负，+1 最正）。</p>
+  <p class="note">
+    x 轴按日历日铺满，没有打分消息的日子留空、折线在那里断开（不插值，也不补零）。窗口内不足 3 条的日子从折线里剔除，另用橙色散点标出。y 轴按数据自适应，但以 0 为中线上下对称、跨度至少 ±0.2：整幅固定成 [-1, 1] 会把实测中只有 0.065 的波动压成一条直线，读成「毫无波动」；完全不设下限又会把噪声放大成剧烈起伏。零基线固定在图的垂直中线（虚线）。
+  </p>
+  {{else}}
+  <p class="note">样本不足：没有任何一天的 7 天窗口攒够 3 条已打分消息，因此不画折线图——不补零，也不画一张空白图。</p>
+  {{end}}
+</section>
+
+{{if .View.Comparison.Present}}
+<section>
+  <h2>两版情感对照</h2>
+  <p class="note">
+    同一批消息被两个版本分别打过分。第一行是本次报告的情感模型，第二行是另一版。<strong>不一致率</strong>只在「两版都打过分」的消息上计算：两版把消息判到同一侧才算一致，而「侧」是三档（正 / 负 / 中性，极性恰好为 0 也算一档）。不一致不等于模型错——两版都可能错，只是错的地方不同。
+  </p>
+  <table>
+    <tr><th>版本</th><th class="n">正向</th><th class="n">负向</th><th class="n">中性</th><th class="n">正向比例</th></tr>
+    <tr>
+      <td>{{.View.Comparison.Current.Version}}</td>
+      <td class="n">{{.View.Comparison.Current.Positive}}</td>
+      <td class="n">{{.View.Comparison.Current.Negative}}</td>
+      <td class="n">{{.View.Comparison.Current.Neutral}}</td>
+      <td class="n">{{pct .View.Comparison.Current.PositiveRatio}}</td>
+    </tr>
+    <tr>
+      <td>{{.View.Comparison.Other.Version}}</td>
+      <td class="n">{{.View.Comparison.Other.Positive}}</td>
+      <td class="n">{{.View.Comparison.Other.Negative}}</td>
+      <td class="n">{{.View.Comparison.Other.Neutral}}</td>
+      <td class="n">{{pct .View.Comparison.Other.PositiveRatio}}</td>
+    </tr>
+  </table>
+  <div class="bar">
+    <i style="width:{{pct .View.Comparison.Current.PositiveRatio}};background:#3182ce"></i>
+    <i style="width:{{rest .View.Comparison.Current.PositiveRatio}};background:#c53030"></i>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:#3182ce"></i>{{.View.Comparison.Current.Version}} 正向 {{pct .View.Comparison.Current.PositiveRatio}}</span>
+  </div>
+  <div class="bar">
+    <i style="width:{{pct .View.Comparison.Other.PositiveRatio}};background:#3182ce"></i>
+    <i style="width:{{rest .View.Comparison.Other.PositiveRatio}};background:#c53030"></i>
+  </div>
+  <div class="legend">
+    <span><i class="dot" style="background:#3182ce"></i>{{.View.Comparison.Other.Version}} 正向 {{pct .View.Comparison.Other.PositiveRatio}}</span>
+  </div>
+  <table>
+    <tr><th>不一致率</th><th class="n">不一致 / 两版都打过分</th></tr>
+    <tr><td>{{pct .View.Comparison.DisagreementRate}}</td><td class="n">{{.View.Comparison.Differing}} / {{.View.Comparison.BothScored}}</td></tr>
+  </table>
+  <p class="note">
+    正向比例的分母是「有极性」的消息（正向 + 负向），中性不计入，与情绪分布区同一口径。不一致率的分母只算两版都给出数值的消息：只被一版打过分、或有一版没给出数值（NULL）的消息，既不算一致也不算不一致。
+  </p>
+</section>
+{{end}}
 
 <section>
   <h2>消息类型分布</h2>
@@ -283,6 +350,96 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
           return { value: merged[k], itemStyle: { color: skippedSet[k] ? '#cbd5e0' : SELF } };
         })
       }]
+    };
+  });
+  // The trend's axis is calendar days, not the array's indices: day 1 sitting
+  // next to day 10 would otherwise be drawn as two consecutive days. Missing
+  // days stay on the axis as nulls so the line breaks there instead of
+  // interpolating across them.
+  var TREND_MEAN = '7 天滚动均值';
+  var TREND_SD = '±1 SD（消息离散度，不是置信区间）';
+  var TREND_THIN = '样本不足（窗口内 < 3 条，不画均值）';
+  boot('trend', function () {
+    var points = (D.Trend || {}).Points || [];
+    if (!points.length) { return {}; }
+    var byDay = {};
+    points.forEach(function (p) { byDay[p.Day] = p; });
+    function dayRange(first, last) {
+      var out = [];
+      var cur = new Date(first + 'T00:00:00Z');
+      var end = new Date(last + 'T00:00:00Z');
+      if (isNaN(cur.getTime()) || isNaN(end.getTime())) { return out; }
+      while (cur.getTime() <= end.getTime() && out.length < 4000) {
+        out.push(cur.toISOString().slice(0, 10));
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+      return out;
+    }
+    var days = dayRange(points[0].Day, points[points.length - 1].Day);
+    var mean = [], bandLow = [], bandSpan = [], thin = [];
+    days.forEach(function (day, index) {
+      var p = byDay[day];
+      if (!p) { mean.push(null); bandLow.push(null); bandSpan.push(null); return; }
+      if (!p.Drawable) {
+        mean.push(null); bandLow.push(null); bandSpan.push(null);
+        thin.push([index, Number(p.Mean.toFixed(4))]);
+        return;
+      }
+      mean.push(Number(p.Mean.toFixed(4)));
+      bandLow.push(Number((p.Mean - p.StdDev).toFixed(4)));
+      bandSpan.push(Number((2 * p.StdDev).toFixed(4)));
+    });
+    // Adaptive y axis, but symmetric around zero and never narrower than
+    // ±0.2. A fixed [-1, 1] would flatten a real 0.065 span into a straight
+    // line (read as "nothing happened"); a pure autoscale would blow the same
+    // noise up into dramatic swings.
+    var lo = 0, hi = 0;
+    points.forEach(function (p) {
+      if (!p.Drawable) { return; }
+      lo = Math.min(lo, p.Mean - p.StdDev);
+      hi = Math.max(hi, p.Mean + p.StdDev);
+    });
+    var span = Math.max(hi, -lo, 0.2);
+    return {
+      grid: { left: 52, right: 18, top: 16, bottom: 56 },
+      legend: { bottom: 4, data: [TREND_MEAN, TREND_SD, TREND_THIN] },
+      tooltip: {
+        trigger: 'axis',
+        formatter: function (params) {
+          var day = params && params.length ? params[0].axisValue : '';
+          var p = byDay[day];
+          if (!p) { return day + '<br>没有打分消息，曲线在此断开'; }
+          if (!p.Drawable) { return day + '<br>样本不足：窗口内 ' + p.Count + ' 条（少于 3 条），不画均值'; }
+          return day + '<br>窗口内 ' + p.Count + ' 条<br>均值 ' + p.Mean.toFixed(3) +
+            '<br>±1 SD ' + p.StdDev.toFixed(3) + '（消息离散度，不是置信区间）';
+        }
+      },
+      xAxis: { type: 'category', data: days, axisLabel: { hideOverlap: true } },
+      yAxis: { type: 'value', min: -span, max: span },
+      series: [
+        {
+          name: '', type: 'line', stack: 'sd', data: bandLow, connectNulls: false,
+          lineStyle: { opacity: 0 }, symbol: 'none', silent: true
+        },
+        {
+          name: TREND_SD, type: 'line', stack: 'sd', data: bandSpan, connectNulls: false,
+          lineStyle: { opacity: 0 }, symbol: 'none', silent: true,
+          areaStyle: { color: 'rgba(43,108,176,0.18)' }
+        },
+        {
+          name: TREND_MEAN, type: 'line', data: mean, connectNulls: false,
+          symbol: 'circle', symbolSize: 4,
+          lineStyle: { width: 2, color: SELF }, itemStyle: { color: SELF },
+          markLine: {
+            silent: true, symbol: 'none', label: { show: false },
+            lineStyle: { color: '#cbd5e0', type: 'dashed' }, data: [{ yAxis: 0 }]
+          }
+        },
+        {
+          name: TREND_THIN, type: 'scatter', data: thin, symbolSize: 9,
+          itemStyle: { color: '#d69e2e' }
+        }
+      ]
     };
   });
 })();
