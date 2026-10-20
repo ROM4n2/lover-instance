@@ -1,6 +1,10 @@
-fastapi
-uvicorn
-jieba
-onnxruntime
-tokenizers
-numpy
+# 这是「本机已验证组合」，不是「最新版本」。
+# 每个版本都跑过 92 条 pytest + 真实库三版推理，改任何一个都要重跑全部验证，
+# 尤其是 onnxruntime / tokenizers —— 它们共同决定 tokenize 与图加载路径。
+# 想升级：先 pip install --upgrade <pkg>，再跑 pytest 与真实冒烟，通过了再把新版本写回这里。
+fastapi==0.141.1
+uvicorn==0.52.4
+jieba==0.42.1
+onnxruntime==1.20.1
+tokenizers==0.23.3
+numpy==2.3.5
