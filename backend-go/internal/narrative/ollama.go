@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// maxResponseTokens bounds what the model may write. It is generous for a
+// 150-250 character answer on purpose: a reasoning model spends tokens before
+// it answers, and a cap that only covers the answer truncates the thinking and
+// returns an empty content field. 1,200 is still eight times the answer.
+const maxResponseTokens = 1200
+
 // maxOutputBytes caps how much narration is kept from one model reply. A model
 // that rambles should not be able to bloat the report; 4000 bytes is several
 // times the requested length.
@@ -77,6 +83,13 @@ func (p *ollamaProvider) Generate(ctx context.Context, prompt string) (string, e
 		Model:    p.model,
 		Messages: []chatMessage{{Role: "user", Content: prompt}},
 		Stream:   false,
+		// The answer is 150-250 characters, so a few hundred tokens is the
+		// ceiling, not the target. Without it a chatty model spends the whole
+		// timeout on tokens nobody reads: measured on qwen3.5:4b, one request
+		// produced 4,311 tokens for a one-paragraph answer and blew past two
+		// minutes. A cap turns "hangs" into "long", and truncation is already
+		// handled on the way out.
+		MaxTokens: maxResponseTokens,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -108,7 +121,14 @@ func (p *ollamaProvider) Generate(ctx context.Context, prompt string) (string, e
 	if len(parsed.Choices) == 0 {
 		return "", fmt.Errorf("narrative: ollama returned no choices")
 	}
-	return cleanOutput(parsed.Choices[0].Message.Content), nil
+	text := cleanOutput(parsed.Choices[0].Message.Content)
+	if text == "" {
+		// A reasoning model can spend the entire max_tokens budget thinking and
+		// hand back an empty content field. That is a failed request, not a
+		// short answer: cached as a success it would be served forever.
+		return "", fmt.Errorf("narrative: the model returned no text (it may have spent the whole token budget before answering)")
+	}
+	return text, nil
 }
 
 // cleanOutput trims surrounding whitespace and caps the length at
@@ -123,9 +143,10 @@ func cleanOutput(s string) string {
 }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model     string        `json:"model"`
+	MaxTokens int           `json:"max_tokens"`
+	Messages  []chatMessage `json:"messages"`
+	Stream    bool          `json:"stream"`
 }
 
 type chatMessage struct {

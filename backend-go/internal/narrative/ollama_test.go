@@ -125,6 +125,12 @@ func TestOllama_RequestShape(t *testing.T) {
 	if sent.Model != "llama3" {
 		t.Errorf("model = %q, want llama3", sent.Model)
 	}
+	// A 150-250 character answer does not need thousands of tokens, and a model
+	// that thinks out loud will spend the whole timeout doing it: measured on
+	// qwen3.5:4b, one request emitted 4,311 tokens for a one-paragraph answer.
+	if sent.MaxTokens != maxResponseTokens {
+		t.Errorf("max_tokens = %d, want %d: the request has to cap what the model may write", sent.MaxTokens, maxResponseTokens)
+	}
 	if len(sent.Messages) != 1 {
 		t.Fatalf("messages length = %d, want 1", len(sent.Messages))
 	}
