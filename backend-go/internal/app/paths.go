@@ -32,6 +32,14 @@ func DefaultNLPURL() string { return "http://127.0.0.1:8000" }
 // loopback address is ever accepted (ADR-0004).
 func DefaultOllamaURL() string { return "http://127.0.0.1:11434" }
 
+// DefaultDashboardAddr is where the dashboard's own server listens. It lives
+// here, beside the other defaults, because the command that starts that server
+// has to name the address to bind and the user has to be told where to point a
+// browser — and a second copy of "127.0.0.1:8787" is a second thing to drift.
+// cmd/server still carries its own copy today; the entry point that launches it
+// reads this one so the two agree by construction rather than by review.
+func DefaultDashboardAddr() string { return "127.0.0.1:8787" }
+
 // NarrativeCacheDir is where narrations are remembered. It sits beside the
 // database under LOCALAPPDATA, which is not synced by default, because a cached
 // paragraph describes the conversation.
