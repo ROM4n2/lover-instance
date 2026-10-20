@@ -17,10 +17,12 @@ package main
 //
 // The three states are the answer to "can I score with this?", and they are
 // deliberately not a boolean. "Installed" means every pinned file is present with
-// the digest the registry demands; "not installed" means at least one is absent;
-// "mismatch" means a file is there and is not the bytes that were reviewed —
-// usually a truncated download, and the one state that must never be read as
-// ready.
+// the digest the registry demands; "not installed" means at least one is absent,
+// which covers both "never fetched" and "fetched half of it"; "mismatch" means a
+// file is there and is not the bytes that were reviewed, and is the one state
+// that must never be read as ready. Because "not installed" spans two different
+// situations, the listing's detail column is what tells them apart and what
+// names the command that fixes each.
 
 import (
 	"context"
@@ -115,8 +117,9 @@ func modelStatuses(reg registry, cacheRoot string) []modelStatus {
 }
 
 // state is the three-way answer. A model with some files present and some absent
-// is not installed — it cannot score — and the detail column says how far an
-// interrupted add got.
+// is not installed — it cannot score — and the detail column is what says
+// whether that is because nothing was ever fetched or because an add stopped
+// part-way through.
 func (m modelStatus) state() string {
 	present, mismatched := 0, 0
 	for _, file := range m.files {
@@ -140,7 +143,16 @@ func (m modelStatus) state() string {
 	}
 }
 
-// detail is the second column: how many files match, or which one does not.
+// detail is the second column: what the cache actually shows, and what to do
+// about it.
+//
+// The three answers are different facts and they are not allowed to collapse
+// into one sentence. "Nothing is there" is the normal state of a model nobody
+// has asked for — this project ships with a dictionary baseline that downloads
+// nothing, so an empty directory is a choice, not a wound. Calling it "an
+// interrupted add" sends a person looking for a half-finished download that
+// never happened. Only a directory with some files present and some absent is
+// evidence of a download that stopped early.
 func (m modelStatus) detail() string {
 	present, mismatched := 0, 0
 	var bad []string
@@ -156,9 +168,14 @@ func (m modelStatus) detail() string {
 	}
 	switch {
 	case mismatched > 0:
-		return " (" + strings.Join(bad, "; ") + ")"
+		// The names are right and the bytes are not. Nothing was interrupted:
+		// something was replaced, truncated, or fetched from somewhere else.
+		return fmt.Sprintf(" (%d of %d files are there but not the bytes that were pinned: %s; run `lover model verify` to see every one, or `lover model add %s` to fetch them again)",
+			mismatched, len(m.files), strings.Join(bad, "; "), m.entry.Version)
+	case present == 0:
+		return fmt.Sprintf(" (nothing installed: no pinned file is in the cache, so this version has never been fetched — `lover model add %s` is what installs it)", m.entry.Version)
 	case present < len(m.files):
-		return fmt.Sprintf(" (%d of %d files present, so an earlier add was interrupted; re-run `lover model add %s`)", present, len(m.files), m.entry.Version)
+		return fmt.Sprintf(" (%d of %d files present, so the last add did not finish; re-run `lover model add %s` to fetch the rest)", present, len(m.files), m.entry.Version)
 	default:
 		return fmt.Sprintf(" (%d/%d files match their pin)", present, len(m.files))
 	}

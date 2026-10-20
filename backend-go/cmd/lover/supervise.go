@@ -68,6 +68,12 @@ type child struct {
 	cmd     *exec.Cmd
 	done    chan struct{}
 	waitErr error
+
+	// cleanup is what to do with what the process was using, once the process
+	// is gone. A caller that compiled a binary into the temporary directory
+	// owns deleting it, and a running executable is a file the operating
+	// system still holds open — so this runs after the wait, never before.
+	cleanup func()
 }
 
 // newChild starts cmd as the leader of its own process group, with its output
@@ -132,6 +138,18 @@ func (c *child) stop() {
 	select {
 	case <-c.done:
 	case <-time.After(forceStopTimeout):
+	}
+}
+
+// runCleanup runs what was registered for after the process is gone.
+//
+// Whether it succeeded is the cleanup's own business and never this command's
+// exit code: a leftover file in the temporary directory is untidy, while
+// reporting it would turn a run that did its job into a run that claims to have
+// failed.
+func (c *child) runCleanup() {
+	if c.cleanup != nil {
+		c.cleanup()
 	}
 }
 

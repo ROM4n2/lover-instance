@@ -285,6 +285,144 @@ func TestModelRemoveRefusesAPathOutsideTheCache(t *testing.T) {
 	}
 }
 
+// modelCacheUnderLocalAppData is the cache root as the real registry reports it:
+// under LOCALAPPDATA, beside the database, which is what makes "nothing
+// installed" the ordinary state of a machine that has not asked for a model.
+func modelCacheUnderLocalAppData(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("LOCALAPPDATA", root)
+	return filepath.Join(root, "lover-instance", "models")
+}
+
+// singleModelRegistry is a table with one version pinning the two files every
+// test here writes.
+func singleModelRegistry(cacheRoot string) registry {
+	return registry{
+		CacheRoot: cacheRoot,
+		Models: []modelEntry{{
+			Version:  "erlangshen-110m-v1",
+			Name:     "erlangshen",
+			Revision: "main",
+			Files: map[string]string{
+				"config.json":          digestOf(configBytes),
+				"model_quantized.onnx": digestOf(weightsBytes),
+			},
+		}},
+	}
+}
+
+// listOneModel runs `lover model list` against one model in the given cache and
+// returns what it printed.
+func listOneModel(t *testing.T, cacheRoot string) invocation {
+	t.Helper()
+	newRepo(t)
+	stubRegistryModules(t)
+	stubRegistry(t, singleModelRegistry(cacheRoot))
+	stubDownload(t)
+	return invoke(t, context.Background(), "model", "list")
+}
+
+// TestModelDetailSaysNothingWasInstalled is the wording that was wrong: an empty
+// directory is how a machine that never asked for a model looks, not how an
+// interrupted download looks. The old line blamed an add that never happened.
+func TestModelDetailSaysNothingWasInstalled(t *testing.T) {
+	cache := modelCacheUnderLocalAppData(t)
+
+	got := listOneModel(t, cache)
+
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", got.code, exitOK, got.stderr)
+	}
+	if !strings.Contains(got.stdout, "nothing installed") {
+		t.Errorf("stdout does not say nothing is installed: %q", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "has never been fetched") {
+		t.Errorf("stdout does not say the version was never fetched: %q", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "lover model add erlangshen-110m-v1") {
+		t.Errorf("stdout does not name the command that installs it: %q", got.stdout)
+	}
+	// The attribution that was wrong, stated as what it must never say again:
+	// no files on disk is not evidence of an interrupted download.
+	if strings.Contains(got.stdout, "interrupted") {
+		t.Errorf("stdout blames an interrupted add on an empty cache: %q", got.stdout)
+	}
+}
+
+// TestModelDetailSaysAnAddDidNotFinish is the case the interrupted wording was
+// actually about: part of the model is on disk and part of it is not.
+func TestModelDetailSaysAnAddDidNotFinish(t *testing.T) {
+	cache := modelCacheUnderLocalAppData(t)
+	dir := filepath.Join(cache, "erlangshen")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	// One of the two pinned files, with the right bytes: the download stopped
+	// after the first one.
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(configBytes), 0o600); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+
+	got := listOneModel(t, cache)
+
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", got.code, exitOK, got.stderr)
+	}
+	if !strings.Contains(got.stdout, "1 of 2 files present") {
+		t.Errorf("stdout does not say how far the install got: %q", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "did not finish") {
+		t.Errorf("stdout does not say the last add did not finish: %q", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "lover model add erlangshen-110m-v1") {
+		t.Errorf("stdout does not name the command that finishes it: %q", got.stdout)
+	}
+	if strings.Contains(got.stdout, "nothing installed") {
+		t.Errorf("stdout reports a half-present model as one that was never fetched: %q", got.stdout)
+	}
+}
+
+// TestModelDetailSaysTheBytesDoNotMatchThePin is the third state: every file is
+// there and at least one is not the bytes that were reviewed. Nothing was
+// interrupted here, and the fix is to look or to fetch again, in that order.
+func TestModelDetailSaysTheBytesDoNotMatchThePin(t *testing.T) {
+	cache := modelCacheUnderLocalAppData(t)
+	dir := filepath.Join(cache, "erlangshen")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	for name, body := range map[string]string{
+		"config.json":          configBytes,
+		"model_quantized.onnx": "bytes that were never reviewed",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	got := listOneModel(t, cache)
+
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", got.code, exitOK, got.stderr)
+	}
+	if !strings.Contains(got.stdout, "sha mismatch") {
+		t.Errorf("stdout does not report the mismatch: %q", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "not the bytes that were pinned") {
+		t.Errorf("stdout does not say the files are there but wrong: %q", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "lover model verify") {
+		t.Errorf("stdout does not point at verify: %q", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "lover model add erlangshen-110m-v1") {
+		t.Errorf("stdout does not say how to fetch them again: %q", got.stdout)
+	}
+	if strings.Contains(got.stdout, "interrupted") {
+		t.Errorf("stdout blames an interrupted add for a wrong digest: %q", got.stdout)
+	}
+}
+
 // TestModelListHashesWhatIsOnDisk pins the state decision itself: a file whose
 // name is right and whose bytes are wrong is a mismatch, not an installation.
 func TestModelListHashesWhatIsOnDisk(t *testing.T) {

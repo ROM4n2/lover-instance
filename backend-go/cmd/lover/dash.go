@@ -19,7 +19,8 @@ package main
 // that a built binary is a process this command can put in a process group and
 // stop as a group, and that `go run`'s pipe-copying can hold the server's output
 // back. The binary lands in the temporary directory, so nothing is left in the
-// repository and nothing goes stale between runs.
+// repository and nothing goes stale between runs — and this command deletes it
+// once the process it built has been reaped, because nobody else will.
 
 import (
 	"context"
@@ -140,6 +141,12 @@ func runDash(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "lover: %v\n", err)
 		return exitEnv
 	}
+	// Two defers, registered in this order on purpose: they run
+	// last-in-first-out, so stop() — which waits for the process to be reaped
+	// — runs before the cleanup that deletes the executable it was running.
+	// Both ways out of the select below reach them: the server finishing on
+	// its own, and this command being cancelled.
+	defer server.runCleanup()
 	defer server.stop()
 	fmt.Fprintf(stdout, "lover: dashboard on http://%s (Ctrl-C to stop)\n", cfg.addr)
 
@@ -229,22 +236,60 @@ func npmCommand(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 // startDashboardServer builds cmd/server and runs it as this command's child.
+//
+// The compiled binary is this command's own artefact and this command is what
+// deletes it: `go build` was told to write into the temporary directory, which
+// keeps it out of the repository, and nothing else is going to notice a file
+// named after a PID that has already exited. The removal is registered on the
+// child rather than done here, because the file is open for as long as the
+// process runs and only the caller knows when the wait has returned.
 var startDashboardServer = func(ctx context.Context, cfg dashOptions, root string, stderr io.Writer) (*child, error) {
 	binary, err := buildServer(ctx, root, stderr)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(binary, "--db", cfg.dbPath, "--nlp-url", cfg.nlpURL, "--addr", cfg.addr)
+	c, err := newChild(ctx, serverCommand(ctx, binary, cfg, root), filepath.Join(root, "backend-go"), stderr)
+	if err != nil {
+		// Nothing was started, so nothing holds the file: remove it now
+		// rather than leave an executable that never ran in the temporary
+		// directory.
+		_ = os.Remove(binary)
+		return nil, err
+	}
+	// Ignored on purpose, like every other cleanup in this command: a stale
+	// file in the temporary directory is untidy, not a failure of the run,
+	// and reporting it would replace a real exit code with a complaint about
+	// housekeeping.
+	c.cleanup = func() { _ = os.Remove(binary) }
+	return c, nil
+}
+
+// serverCommand is the invocation of the compiled server, given the binary to
+// run and the directory the bundle lives under.
+//
+// It is built with CommandContext and not Command: newChild gives the child a
+// Cancel that kills the whole process group, and os/exec refuses to start a
+// command that has a Cancel but no context — the pair is what makes a
+// cancelled run kill the group rather than only the direct child. That is not a
+// theoretical refusal: with exec.Command here, `lover dash` reports the Start
+// failure and exits 3 without ever serving a page.
+//
+// It is also the seam a test replaces with a command that exits at once, so the
+// removal of the temporary binary can be asserted without paying for a real
+// build: what is under test is what happens to the file, not which process
+// opened it.
+var serverCommand = func(ctx context.Context, binary string, cfg dashOptions, root string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, binary, "--db", cfg.dbPath, "--nlp-url", cfg.nlpURL, "--addr", cfg.addr)
 	// The authoritative way to tell the server where the bundle is: it is the
 	// variable internal/web reads first, and passing it beats relying on the
 	// server's own search order finding the same directory.
 	cmd.Env = append(os.Environ(), "LOVER_FRONTEND_DIST="+filepath.Join(root, "backend-go", "internal", "web", "dist"))
-	return newChild(ctx, cmd, filepath.Join(root, "backend-go"), stderr)
+	return cmd
 }
 
 // buildServer compiles cmd/server into the temporary directory. A missing
 // toolchain is an environment failure, and the message says what to install.
-func buildServer(ctx context.Context, root string, stderr io.Writer) (string, error) {
+var buildServer = func(ctx context.Context, root string, stderr io.Writer) (string, error) {
 	goCmd, err := exec.LookPath("go")
 	if err != nil {
 		return "", fmt.Errorf("the Go toolchain was not found on PATH (%v), so the dashboard server cannot be built; install Go, or run `go build ./cmd/server` in backend-go yourself", err)

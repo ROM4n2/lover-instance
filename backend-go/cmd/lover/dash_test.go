@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -180,6 +181,144 @@ func TestDashRefusesATakenPort(t *testing.T) {
 	}
 	if !strings.Contains(got.stderr, addr[strings.LastIndex(addr, ":")+1:]) {
 		t.Errorf("stderr does not name the port: %q", got.stderr)
+	}
+}
+
+// TestDashRemovesTheServerBinaryItBuilt is the cleanup the temporary directory
+// is owed: `lover dash` compiles cmd/server into %TEMP%, and that file is this
+// command's to delete, not the person's.
+//
+// The file is a real one and the assertion is about the filesystem rather than
+// about a counter, because a cleanup that is registered but never reached
+// leaves the file behind and only os.Stat can tell the difference. What is
+// faked is which process gets launched — a real build costs a compile of
+// cmd/server and cannot be made to exit on a timer — and the identity of the
+// process has no bearing on what happens to the file.
+func TestDashRemovesTheServerBinaryItBuilt(t *testing.T) {
+	root := newRepo(t)
+	writeDist(t, root) // a fresh bundle, so the build question is out of the way
+	restore := npmAvailable
+	npmAvailable = func() bool { return true }
+	t.Cleanup(func() { npmAvailable = restore })
+
+	binary := fakeBuild(t, exitsAtOnceCommand)
+
+	got := invoke(t, context.Background(), "dash", "--addr", freeAddr(t))
+
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", got.code, exitOK, got.stderr)
+	}
+	// The dashboard line is printed only after startDashboardServer returned a
+	// started child. Without it, the file below could have been deleted by the
+	// path that covers a failed start, and this test would assert nothing.
+	if !strings.Contains(got.stdout, "dashboard on http://") {
+		t.Fatalf("no server was started, so the removal proves nothing: %q / %q", got.stdout, got.stderr)
+	}
+	if _, err := os.Stat(binary); !os.IsNotExist(err) {
+		t.Errorf("the temporary server binary survived the run (stat = %v): %s", err, binary)
+	}
+}
+
+// TestDashRemovesTheServerBinaryWhenCancelled is the other way out of the wait:
+// Ctrl-C. The process is killed and reaped by stop, and the cleanup registered
+// behind it still has to run — a cancellation is the path a person takes most
+// often and the one a deferred cleanup is easiest to lose.
+func TestDashRemovesTheServerBinaryWhenCancelled(t *testing.T) {
+	root := newRepo(t)
+	writeDist(t, root)
+	restore := npmAvailable
+	npmAvailable = func() bool { return true }
+	t.Cleanup(func() { npmAvailable = restore })
+
+	marker := filepath.Join(t.TempDir(), "server-started")
+	binary := fakeBuild(t, func(ctx context.Context) *exec.Cmd { return sleepCommand(ctx, marker) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan invocation, 1)
+	go func() { finished <- invoke(t, ctx, "dash", "--addr", freeAddr(t)) }()
+
+	// Cancelled only once the child is genuinely running: a cancellation that
+	// arrived before the process existed would prove nothing about a cleanup
+	// that is defined to run after the wait.
+	if err := waitForMarker(marker, 10*time.Second); err != nil {
+		cancel()
+		t.Fatalf("the fake server never started (%v); stderr:\n%s", err, (<-finished).stderr)
+	}
+	cancel()
+
+	got := <-finished
+	// Which branch of the select the run took is decided by the kernel: the
+	// cancellation and the death it caused become ready at the same moment.
+	// Both are a run that ended, and the subject of this test is the file.
+	if got.code != exitOK && got.code != exitRun {
+		t.Fatalf("exit code = %d, want %d or %d; stderr:\n%s", got.code, exitOK, exitRun, got.stderr)
+	}
+	if _, err := os.Stat(binary); !os.IsNotExist(err) {
+		t.Errorf("the temporary server binary survived a cancellation (stat = %v): %s", err, binary)
+	}
+}
+
+// fakeBuild replaces the two seams startDashboardServer uses, so the removal of
+// the temporary binary can be tested without a toolchain: buildServer writes a
+// real file and names it, and serverCommand launches run instead of that file.
+// The file is never executed, which is what keeps this fast and portable.
+func fakeBuild(t *testing.T, run func(ctx context.Context) *exec.Cmd) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "lover-server-test")
+	if os.PathSeparator == '\\' {
+		binary += ".exe"
+	}
+	if err := os.WriteFile(binary, []byte("never launched: the command is faked"), 0o600); err != nil {
+		t.Fatalf("write the fake temporary binary: %v", err)
+	}
+	restoreBuild := buildServer
+	buildServer = func(context.Context, string, io.Writer) (string, error) { return binary, nil }
+	t.Cleanup(func() { buildServer = restoreBuild })
+
+	restoreCommand := serverCommand
+	serverCommand = func(ctx context.Context, _ string, _ dashOptions, _ string) *exec.Cmd { return run(ctx) }
+	t.Cleanup(func() { serverCommand = restoreCommand })
+	return binary
+}
+
+// exitsAtOnceCommand is the server as a process that finishes immediately.
+func exitsAtOnceCommand(ctx context.Context) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/c", "exit", "0")
+	}
+	return exec.CommandContext(ctx, "true")
+}
+
+// sleepCommand is the server as a process that outlives the command's own
+// start: it writes a marker, so a test can know it is running before it
+// cancels, and then does nothing for long enough that only the cancellation
+// ends it.
+//
+// The Windows form passes every word separately rather than as one quoted
+// command line: os/exec escapes the arguments it was given, and a single
+// argument full of quotes is a command line cmd.exe then parses differently.
+func sleepCommand(ctx context.Context, marker string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/c", "echo", "started", ">", marker, "&&", "ping", "-n", "60", "127.0.0.1", ">", "nul")
+	}
+	return exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(`echo started > "%s"; sleep 60`, marker))
+}
+
+// waitForMarker waits until the child has written its marker, which is the
+// earliest moment a cancellation can say anything about the cleanup that
+// follows the wait. It polls the filesystem rather than the child's fields,
+// because the child is started by another goroutine.
+func waitForMarker(marker string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the fake server never wrote %s", marker)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
