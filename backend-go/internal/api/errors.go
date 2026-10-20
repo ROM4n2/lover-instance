@@ -45,3 +45,31 @@ func writeError(c *gin.Context, status int, code, message, hint string) {
 		Hint:    hint,
 	})
 }
+
+// apiFailure is an error response prepared below the handler that writes it.
+//
+// The endpoints added in this task share a few decisions — which conversation,
+// which model version — and each of those decisions can fail several ways. A
+// helper returning this value can say why without writing to the response, so
+// the handler stays one straight line and every failure still leaves through
+// writeError.
+//
+// It carries no error value on purpose: message and hint are written by hand,
+// never derived from err.Error(), because an error string is where a database
+// path or a value taken from the chat log would escape into a response.
+type apiFailure struct {
+	status  int
+	code    string
+	message string
+	hint    string
+}
+
+// fail builds a failure the same way writeError would write it.
+func fail(status int, code, message, hint string) *apiFailure {
+	return &apiFailure{status: status, code: code, message: message, hint: hint}
+}
+
+// write is the only way an apiFailure reaches a client.
+func (f *apiFailure) write(c *gin.Context) {
+	writeError(c, f.status, f.code, f.message, f.hint)
+}

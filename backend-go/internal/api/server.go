@@ -11,6 +11,14 @@ import (
 	"lover-instance/backend-go/internal/store"
 )
 
+// jobKindSentiment is the analysis_jobs.kind this package produces, watches and
+// cancels. It lives here because it is shared: GET /api/overview watches the
+// slot, POST /api/jobs fills it and DELETE /api/jobs/:id empties it, so all
+// three have to name the same thing. cmd/analyze writes under the same string,
+// which is what makes the CLI and the dashboard one single-flight slot rather
+// than two.
+const jobKindSentiment = "sentiment"
+
 // Options is everything the API server needs from its caller. New does not
 // reach for a global to find any of it.
 type Options struct {
@@ -65,6 +73,7 @@ func New(opts Options) *gin.Engine {
 	// tasks hang off the same prefix instead of each spelling "/api" out.
 	apiGroup := r.Group("/api")
 	apiGroup.GET("/health", healthHandler(opts))
+	apiGroup.GET("/overview", overviewHandler(opts))
 	return r
 }
 
