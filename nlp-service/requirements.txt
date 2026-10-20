@@ -1,3 +1,6 @@
 fastapi
 uvicorn
 jieba
+onnxruntime
+tokenizers
+numpy
