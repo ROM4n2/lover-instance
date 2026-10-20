@@ -1,0 +1,213 @@
+<template>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <h1>聊天关系分析面板</h1>
+        <div v-if="overview && overview.talker_hash" class="hash">会话指纹 {{ overview.talker_hash }}</div>
+      </div>
+
+      <label class="talker-field">
+        会话
+        <el-input
+          v-model="talkerInput"
+          size="small"
+          placeholder="留空用默认会话"
+          style="width: 160px"
+          @keyup.enter="applyTalker"
+          @blur="applyTalker"
+        />
+      </label>
+
+      <nav class="tabs">
+        <button
+          v-for="tab in tabs"
+          :key="tab.key"
+          :class="['tab', { active: view === tab.key }]"
+          @click="switchView(tab.key)"
+        >
+          {{ tab.label }}
+        </button>
+      </nav>
+
+      <HealthBadge :health="health" />
+    </header>
+
+    <main class="content">
+      <el-alert
+        v-if="overviewError"
+        :title="overviewError.message || '无法读取概览数据'"
+        :description="overviewError.hint || ''"
+        type="error"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 14px"
+      />
+
+      <Overview v-if="view === 'overview'" :overview="overview" />
+      <Sentiment v-else-if="view === 'sentiment'" :overview="overview" :analysis="analysis" />
+      <Jobs
+        v-else-if="view === 'jobs'"
+        :health="health"
+        :talker="talker"
+        :overview="overview"
+        @refresh="refreshAll"
+      />
+    </main>
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import * as api from './api'
+import { normalizeView, readState, writeState } from './useUrlState'
+import HealthBadge from './components/HealthBadge.vue'
+import Overview from './views/Overview.vue'
+import Sentiment from './views/Sentiment.vue'
+import Jobs from './views/Jobs.vue'
+
+const tabs = [
+  { key: 'overview', label: '概览' },
+  { key: 'sentiment', label: '情感' },
+  { key: 'jobs', label: '任务' },
+]
+
+const view = ref('overview')
+const talker = ref('')
+const talkerInput = ref('')
+
+const health = ref(null)
+const overview = ref(null)
+const overviewError = ref(null)
+
+let healthTimer = null
+let progressTimer = null
+
+// analysis is the half-finished gate the views read. It defaults to "not
+// running" so the first paint (before overview arrives) never draws a gate for
+// a run that does not exist.
+const analysis = computed(() => {
+  const value = overview.value && overview.value.analysis
+  return value || { running: false, done: 0, total: 0 }
+})
+
+async function loadHealth() {
+  try {
+    health.value = await api.getHealth()
+  } catch {
+    // A failed poll keeps the previous answer; the next tick tries again. The
+    // badge is not the place to raise a network error.
+  }
+}
+
+async function loadOverview({ silent = false } = {}) {
+  if (!silent) overviewError.value = null
+  try {
+    const data = await api.getOverview(talker.value)
+    overview.value = data
+    syncProgressPolling()
+  } catch (error) {
+    if (!silent) overviewError.value = error
+  }
+}
+
+// Polling rhythm. The health badge is every 5s (Task 6). Progress, while a run
+// is active, is every 2s: fast enough that a moving bar reads as live, slow
+// enough not to hammer the single database connection the worker also uses.
+const HEALTH_INTERVAL = 5000
+const PROGRESS_INTERVAL = 2000
+
+function syncProgressPolling() {
+  if (analysis.value.running) startProgressPolling()
+  else stopProgressPolling()
+}
+
+function startProgressPolling() {
+  if (progressTimer) return
+  progressTimer = setInterval(tickProgress, PROGRESS_INTERVAL)
+}
+
+function stopProgressPolling() {
+  if (progressTimer) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
+}
+
+// tickProgress asks the job endpoint for absolute progress while a run is
+// active. When the run reaches a terminal status the gate is lifted and the
+// overview is reloaded once so the views can draw the finished data.
+async function tickProgress() {
+  const job = health.value && health.value.job
+  try {
+    if (job && job.id) {
+      const current = await api.getJob(job.id)
+      const active = current.status === 'queued' || current.status === 'running'
+      if (overview.value) {
+        overview.value = {
+          ...overview.value,
+          analysis: { running: active, done: current.done, total: current.total },
+        }
+      }
+      if (!active) {
+        stopProgressPolling()
+        await refreshAll()
+      }
+      return
+    }
+
+    // No job id yet (health has not caught up): fall back to the overview,
+    // which carries analysis.done/total for the conversation's own slot.
+    await loadOverview({ silent: true })
+    if (!analysis.value.running) stopProgressPolling()
+  } catch {
+    // Transient failure: leave the timer running so the next tick retries.
+  }
+}
+
+async function refreshAll() {
+  await Promise.all([loadHealth(), loadOverview({ silent: true })])
+}
+
+function switchView(next) {
+  view.value = normalizeView(next)
+  writeState({ view: view.value, talker: talker.value }, { push: true })
+}
+
+function applyTalker() {
+  const value = (talkerInput.value || '').trim()
+  if (value === talker.value) return
+  talker.value = value
+  writeState({ view: view.value, talker: talker.value }, { push: true })
+  loadOverview()
+}
+
+function onPopState() {
+  const state = readState()
+  view.value = state.view
+  talker.value = state.talker
+  talkerInput.value = state.talker
+  loadOverview()
+}
+
+onMounted(() => {
+  const initial = readState()
+  view.value = initial.view
+  talker.value = initial.talker
+  talkerInput.value = initial.talker
+
+  // Normalise the URL once so every load has a concrete ?view= and a bookmark
+  // lands on the same tab. replace, not push: this is not a navigation.
+  writeState({ view: view.value, talker: talker.value }, { push: false })
+
+  loadHealth()
+  loadOverview()
+  healthTimer = setInterval(loadHealth, HEALTH_INTERVAL)
+  window.addEventListener('popstate', onPopState)
+})
+
+onUnmounted(() => {
+  if (healthTimer) clearInterval(healthTimer)
+  stopProgressPolling()
+  window.removeEventListener('popstate', onPopState)
+})
+</script>

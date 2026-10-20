@@ -1,0 +1,219 @@
+:root {
+  --self: #2b6cb0;
+  --partner: #c53030;
+  --ink: #1a202c;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --bg: #f7fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.65 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+
+.app {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 16px 64px;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 0 12px;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 10;
+}
+
+.brand h1 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.brand .hash {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.tab {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.tab.active {
+  background: var(--self);
+  border-color: var(--self);
+  color: #fff;
+}
+
+.talker-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.content {
+  padding-top: 16px;
+}
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.card .k {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.card .v {
+  font-size: 20px;
+  font-weight: 600;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.card .s {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.panel h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.panel h3 {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 4px 0 10px;
+}
+
+.duo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 760px) {
+  .duo {
+    grid-template-columns: 1fr;
+  }
+}
+
+.counter {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.loading {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 24px;
+}
+
+/* Health badge in the corner. */
+.health {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid transparent;
+}
+
+.health .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.health.ok {
+  background: #f0fff4;
+  border-color: #9ae6b4;
+  color: #276749;
+}
+
+.health.ok .dot {
+  background: #38a169;
+}
+
+.health.degraded {
+  background: #fffbea;
+  border-color: #f6e05e;
+  color: #975a16;
+}
+
+.health.degraded .dot {
+  background: #d69e2e;
+}
+
+.health .hint {
+  color: inherit;
+  opacity: 0.85;
+}
