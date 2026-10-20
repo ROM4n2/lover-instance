@@ -41,7 +41,7 @@ func seedSecondVersion(t *testing.T, s *store.Store) {
 // how the caller selects which version is "current".
 func collectVersion(t *testing.T, s *store.Store, version string) View {
 	t.Helper()
-	view, err := Collect(context.Background(), s, testTalker, store.BehaviorModelVersion, version)
+	view, err := Collect(context.Background(), s, testTalker, store.BehaviorModelVersion, version, nil)
 	if err != nil {
 		t.Fatalf("Collect(%s) error: %v", version, err)
 	}

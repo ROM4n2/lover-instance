@@ -76,7 +76,7 @@ func overviewHandler(opts Options) gin.HandlerFunc {
 		// One derivation, the report's own. Anything computed a second time here
 		// would be a second answer to the same question, and the two would drift
 		// the first time either changed.
-		view, err := report.Collect(ctx, opts.Store, talker, store.BehaviorModelVersion, version)
+		view, err := report.Collect(ctx, opts.Store, talker, store.BehaviorModelVersion, version, nil)
 		if err != nil {
 			// The error is not echoed: it wraps a SQL error, and an error string
 			// is the easiest place for a database path to leave the process.

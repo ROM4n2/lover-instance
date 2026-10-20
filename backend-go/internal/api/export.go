@@ -72,7 +72,7 @@ func exportHandler(opts Options) gin.HandlerFunc {
 			return
 		}
 
-		view, err := report.Collect(ctx, opts.Store, talker, store.BehaviorModelVersion, version)
+		view, err := report.Collect(ctx, opts.Store, talker, store.BehaviorModelVersion, version, nil)
 		if err != nil {
 			writeError(c, http.StatusInternalServerError, "internal",
 				"the report could not be assembled from this database",

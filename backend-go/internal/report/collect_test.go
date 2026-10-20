@@ -83,7 +83,7 @@ VALUES ('chatlog-keeper','img',?, ?, 'wxid_peer', 0, 3, 0, '', 'h')`, base+240_0
 
 func collect(t *testing.T, s *store.Store) View {
 	t.Helper()
-	view, err := Collect(context.Background(), s, testTalker, store.BehaviorModelVersion, testModelVersion)
+	view, err := Collect(context.Background(), s, testTalker, store.BehaviorModelVersion, testModelVersion, nil)
 	if err != nil {
 		t.Fatalf("Collect() error: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestCollect_MarksAPartialCoverage(t *testing.T) {
 	s := newStore(t)
 	seedConversation(t, s)
 	// Score nothing for this run's model version, so coverage is 0 of 4.
-	view, err := Collect(context.Background(), s, testTalker, store.BehaviorModelVersion, "some-other-model")
+	view, err := Collect(context.Background(), s, testTalker, store.BehaviorModelVersion, "some-other-model", nil)
 	if err != nil {
 		t.Fatalf("Collect() error: %v", err)
 	}

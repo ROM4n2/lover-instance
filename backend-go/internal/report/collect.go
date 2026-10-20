@@ -7,9 +7,19 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
+	"lover-instance/backend-go/internal/narrative"
 	"lover-instance/backend-go/internal/store"
 )
+
+// Narrator writes a paragraph about a conversation from the aggregates in a
+// narrative.Input. It is the seam that lets the report stay free of any
+// concrete LLM: a test injects a deterministic fake, the CLI injects the
+// cached loopback provider, and Collect itself never knows which it has.
+type Narrator interface {
+	Narrate(ctx context.Context, in narrative.Input) (string, error)
+}
 
 // TopWords is how many entries each word cloud carries.
 const TopWords = 200
@@ -28,7 +38,7 @@ var emojiToken = regexp.MustCompile(`^\[.+\]$`)
 // and the type histogram have no column in the design's schema, so reading
 // some figures from daily_stats and computing others would create two
 // derivations of the same day that could quietly disagree.
-func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, sentimentModelVersion string) (View, error) {
+func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, sentimentModelVersion string, narrator Narrator) (View, error) {
 	behavior, err := s.BehaviorMetrics(ctx, talker)
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
@@ -65,6 +75,10 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
+	monthly, err := monthlyView(ctx, s, talker, sentimentModelVersion)
+	if err != nil {
+		return View{}, err
+	}
 
 	view := View{
 		Meta: MetaView{
@@ -86,8 +100,150 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 		// and the template states whose work it is.
 		EmotionSource: emotionSource,
 		Disclaimer:    DisclaimerText,
+		Monthly:       monthly,
+	}
+
+	// The narration runs last and its failure is never returned. The report is
+	// the product; a local model being absent, slow or misconfigured writes one
+	// sentence into the section and leaves the exit code at zero (M4 plan,
+	// "降级不致命").
+	if narrator == nil {
+		view.NarrativeNote = "本次未生成叙事（未配置本机模型）"
+	} else {
+		text, err := narrator.Narrate(ctx, narrativeInput(view))
+		switch {
+		case err != nil:
+			view.NarrativeNote = "未生成叙事：" + narrativeFailureReason(err)
+		case strings.TrimSpace(text) == "":
+			view.NarrativeNote = "未生成叙事：本机模型返回了空内容"
+		default:
+			view.Narrative = text
+		}
 	}
 	return view, nil
+}
+
+// monthlyView reads the other side's per-month top words.
+//
+// The partner side is chosen (and the template names it) so one chart answers
+// "what did they keep saying, month by month" without implying a comparison the
+// data cannot support. A version with no monthly rows yields an empty slice and
+// no error: that is the pre-rescan state, and the template explains it instead
+// of drawing an empty chart that would read as a quiet month.
+func monthlyView(ctx context.Context, s *store.Store, talker, sentimentModelVersion string) ([]MonthView, error) {
+	if sentimentModelVersion == "" {
+		return nil, nil
+	}
+	months, err := s.MonthlyWordFrequencies(ctx, talker, sentimentModelVersion, false, 12)
+	if err != nil {
+		return nil, fmt.Errorf("report: %w", err)
+	}
+	view := make([]MonthView, 0, len(months))
+	for _, month := range months {
+		words := make([]WordCount, 0, len(month.Words))
+		for _, entry := range month.Words {
+			words = append(words, WordCount{Word: entry.Word, Count: entry.Count})
+		}
+		view = append(view, MonthView{Month: month.Month, Words: words})
+	}
+	return view, nil
+}
+
+// narrativeInput copies the aggregates into the one struct the model is allowed
+// to see. Every field here is a count, a share, a date or a word token; there
+// is deliberately no place for a message, a sender or the conversation key, so
+// the privacy boundary is enforced by the type rather than by care.
+//
+// Rejected on purpose: Meta.TalkerHash, the raw talker, and every message body.
+// The word lists carry only .Word, never a source sentence, and the date range
+// is formatted to day precision so no timestamp rides along.
+func narrativeInput(view View) narrative.Input {
+	input := narrative.Input{
+		Days:            view.Summary.DayCount,
+		Messages:        view.Summary.SelfMsgs + view.Summary.PartnerMsgs,
+		SelfMessages:    view.Summary.SelfMsgs,
+		PartnerMessages: view.Summary.PartnerMsgs,
+		RangeStart:      dayString(view.Meta.RangeStartMs),
+		RangeEnd:        dayString(view.Meta.RangeEndMs),
+		EmotionShares:   view.Emotion.Shares,
+		TopWordsSelf:    wordList(view.Words.Self, 15),
+		TopWordsPartner: wordList(view.Words.Partner, 15),
+		TopExpressions:  wordList(view.Emoji.Partner, 8),
+		TrendPoints:     trendPointsForNarrative(view.Trend.Points),
+	}
+	if len(view.Monthly) > 0 {
+		input.MonthlyTop = make(map[string][]string, len(view.Monthly))
+		for _, month := range view.Monthly {
+			input.MonthlyTop[month.Month] = wordList(month.Words, 8)
+		}
+	}
+	return input
+}
+
+// wordList takes the words off a ranking, capped, so the prompt carries tokens
+// and never the entries' provenance.
+func wordList(entries []WordCount, limit int) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Word == "" {
+			continue
+		}
+		out = append(out, entry.Word)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out
+}
+
+func trendPointsForNarrative(points []TrendPointView) []narrative.TrendPoint {
+	out := make([]narrative.TrendPoint, 0, len(points))
+	for _, point := range points {
+		out = append(out, narrative.TrendPoint{
+			Day: point.Day, Mean: point.Mean, StdDev: point.StdDev, Count: point.Count,
+		})
+	}
+	return out
+}
+
+// dayString renders a millisecond timestamp as a calendar date in the report's
+// zone. A zero timestamp (no messages) becomes an empty string rather than a
+// 1970 date the model would then describe.
+func dayString(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).In(cst).Format("2006-01-02")
+}
+
+// narrativeFailureReason maps a narration error to a short, fixed phrase.
+//
+// The error itself is never printed. It can wrap a filesystem path or a request
+// URL, and the report is a file meant to be shared; only the shape of the
+// failure is safe to carry. Every branch returns a constant.
+func narrativeFailureReason(err error) string {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "connection refused"),
+		strings.Contains(message, "connectex"),
+		strings.Contains(message, "dial tcp"),
+		strings.Contains(message, "no such host"),
+		strings.Contains(message, "actively refused"):
+		return "本机模型未运行"
+	case strings.Contains(message, "timeout"),
+		strings.Contains(message, "deadline exceeded"):
+		return "本机模型超时"
+	case strings.Contains(message, "status 404"):
+		return "本机没有这个模型"
+	case strings.Contains(message, "no model name"),
+		strings.Contains(message, "loopback"),
+		strings.Contains(message, "must use http"),
+		strings.Contains(message, "timeout must be"),
+		strings.Contains(message, "parse base url"):
+		return "本机模型配置有误"
+	default:
+		return "无法从本机模型取得叙事"
+	}
 }
 
 func summarize(behavior store.BehaviorMetrics) SummaryView {

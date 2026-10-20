@@ -168,6 +168,15 @@ type SummaryView struct {
 	Types []store.TypeCount
 }
 
+// MonthView is one month's top words, already ranked by the store.
+//
+// The words are a token ranking, not a sentence: a month is a slice of the same
+// word cloud over time, and it carries nothing a message body could ride in on.
+type MonthView struct {
+	Month string
+	Words []WordCount
+}
+
 // HeatCellView is one square of the 24x7 grid.
 type HeatCellView struct {
 	Weekday      int
@@ -207,6 +216,20 @@ type View struct {
 	// categories out of a polarity sign (ADR-0004).
 	EmotionSource string
 	Disclaimer    string
+
+	// Narrative is the paragraph a local model wrote from the aggregates alone.
+	// It is empty when no narrator was configured or the model could not be
+	// reached, and NarrativeNote then says why in one short, path-free phrase.
+	// The two are mutually exclusive: a section that showed both a paragraph
+	// and an apology would read as if two runs had been merged.
+	Narrative     string
+	NarrativeNote string
+
+	// Monthly is the per-month top words for the other side, oldest month
+	// first. It is empty on data scored before monthly periods existed, and the
+	// template then explains that a rescan is needed rather than drawing a
+	// blank chart that reads as "no words that month".
+	Monthly []MonthView
 }
 
 // DisclaimerText is fixed. It is a constant rather than a field a caller fills
