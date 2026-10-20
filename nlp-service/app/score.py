@@ -18,10 +18,18 @@ them.
   dictionary guesses would put the baseline's output in a model's column, which
   is precisely the kind of unlabelled substitution ADR-0004 forbids.
 
-A model that cannot be fetched or loaded is **503**, not 400 and not 500: the
-request was well formed and the version exists, the service is just not able to
-serve it right now. A missing weight file is a temporary condition; a typo in a
-version name is not.
+A model whose weights cannot be fetched or built *yet* is **503**, not 400 and
+not 500: the request was well formed and the version exists, the service is just
+not able to serve it right now. Deliberately a short list — a dropped connection,
+a full disk, bytes that did not match the pin on this attempt — and it is logged
+before it leaves, because a 503 that Go retries three times and then gives up on
+is otherwise invisible: the caller reads only `code`, and the service had no
+trace of it at all.
+
+Everything else that can go wrong while loading is **permanent**: an empty pinned
+spec, a `positive_index` outside the model's columns, a `config.json` that is not
+JSON. Those are configuration bugs, and they leave as 500 with uvicorn's
+traceback rather than as a 503 the caller would dutifully retry.
 
 Nothing here writes to a file or a database. `score_batch` is a pure function in
 the ordinary sense — same input, same output — with one caveat the model path
@@ -32,12 +40,17 @@ whether the encoder was already warm.
 
 from __future__ import annotations
 
+import logging
+import urllib.error
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app import model_registry
 from app.health import mark_lexicon_loaded
+from app.model_store import ModelIntegrityError
+from app.onnx_encoder import NEUTRAL_LABEL, POSITIVE_LABEL, apply_neutral_band
 from app.sentiment_lexicon import MODEL_VERSION, score
 from app.tokenize import countable_tokens
 
@@ -54,6 +67,27 @@ MAX_BODY_BYTES = 5 * 1024 * 1024
 # `tau` wide and belongs to the entry, not to this module: it is measured per
 # model (see `model_registry`).
 NEUTRAL_POLARITY = 0.0
+
+# Failures that mean "not servable *yet*", and the only ones allowed to become a
+# retryable 503:
+#
+# - `OSError` — a full disk, a refused socket, a permission problem, a half-written
+#   file. `urllib.error.URLError` is a subclass of it and is named too, because
+#   that is the failure a reader of this list is actually looking for.
+# - `ModelIntegrityError` — this attempt downloaded bytes that did not match the
+#   pin. Not permanent by construction: the next attempt starts over.
+#
+# Deliberately excluded: `onnxruntime`'s graph/session errors. Importing the module
+# here would undo this package's "import is cheap, onnxruntime is lazy" property,
+# and after `model_store` has verified every file by sha256 a graph that will not
+# build points at a wrong pin or a wrong export — a permanent configuration bug
+# that deserves the 500 (and the traceback) instead of a retried download. Same
+# reasoning for `ValueError` from a `config.json`/`tokenizer.json` that does not
+# parse, for the empty-spec check, and for `KeyError` on a version that is not
+# configured.
+RETRYABLE_LOAD_ERRORS = (OSError, urllib.error.URLError, ModelIntegrityError)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -106,10 +140,13 @@ class UnknownModelVersion(ValueError):
 
 
 class ModelUnavailable(RuntimeError):
-    """The version exists but its weights could not be obtained or loaded.
+    """The version exists but its weights could not be obtained or loaded *yet*.
 
     Distinct from `UnknownModelVersion` on purpose: this one is retryable, and
     the caller maps it to 503 rather than asking the user to fix a version name.
+    Only `_load_encoder` raises it, and only for `RETRYABLE_LOAD_ERRORS`; every
+    other load failure, and every violated invariant downstream, is a plain
+    exception so that it surfaces as a 500.
     """
 
 
@@ -153,46 +190,71 @@ def _negative_index(labels: list[str], positive_index: int) -> int | None:
 def _polarity(row: list[float], labels: list[str], entry: model_registry.ModelEntry) -> float:
     """Signed polarity in [-1, 1] for one row of class probabilities.
 
-    Binary model: `|p(positive) - 0.5| < tau` is neutral, and outside the band the
-    magnitude is the *winning side's* probability (`p` or `1 - p`). Using `p` for
-    a positive and `-(1 - p)` for a negative keeps `|polarity|` monotone in
-    confidence and never lets the losing class add magnitude — a 0.51/0.49 split
-    should look weak, not strong.
+    Binary model: the band decision is `apply_neutral_band`'s, not a second copy
+    of it here. That function has always been strict (`|p - 0.5| < tau`, boundary
+    still speaks) and Task 1's mutation tests pin it that way; deriving
+    `p > 0.5 + tau` / `p < 0.5 - tau` locally read the boundary the other way
+    round, so the same model scored `0.0` here and `positive` there. Outside the
+    band the magnitude is the *winning side's* probability (`p` or `1 - p`):
+    using `p` for a positive and `-(1 - p)` for a negative keeps `|polarity|`
+    monotone in confidence and never lets the losing class add magnitude — a
+    0.51/0.49 split should look weak, not strong.
 
     Multi-class model: argmax, plus for positive, minus for negative, exactly 0.0
     for its own neutral column. No band is applied; `tau` is 0 for these entries.
     """
     width = len(row)
     if width < 2:
-        raise ModelUnavailable(f"{entry.version}: model returned {width} class column(s)")
+        # Not "cannot be served right now" but "the export is broken": a 500, so
+        # the bug is visible instead of being retried as an outage.
+        raise RuntimeError(f"{entry.version}: model returned {width} class column(s)")
 
     if width == 2:
-        positive = row[entry.positive_index]
-        if positive > 0.5 + entry.tau:
-            return positive
-        if positive < 0.5 - entry.tau:
-            return -(1.0 - positive)
-        return NEUTRAL_POLARITY
+        label = apply_neutral_band([row], entry.tau, entry.positive_index)[0]
+        if label == NEUTRAL_LABEL:
+            return NEUTRAL_POLARITY
+        if label == POSITIVE_LABEL:
+            return row[entry.positive_index]
+        return -(1.0 - row[entry.positive_index])
 
     best = max(range(width), key=lambda index: row[index])
     if best == entry.positive_index:
         return row[best]
-    if best == _negative_index(labels, entry.positive_index):
+    negative = _negative_index(labels, entry.positive_index)
+    if negative is None:
+        # Without a `neg*` column the winning class cannot be signed, and returning
+        # 0.0 would file a confident negative prediction as "no opinion".
+        raise RuntimeError(
+            f"{entry.version}: no negative column among {labels!r}; "
+            f"argmax column {best} cannot be signed"
+        )
+    if best == negative:
         return -row[best]
     return NEUTRAL_POLARITY
 
 
 def _load_encoder(entry: model_registry.ModelEntry):
-    """`model_registry.load`, with every failure turned into a retryable 503.
+    """`model_registry.load`, turning only *retryable* failures into a 503.
 
-    Deliberately broad: `urllib` errors, `ModelIntegrityError`, a corrupt
-    `tokenizer.json`, an onnxruntime build failure and a full disk all mean the
-    same thing to the caller — "this version cannot be served yet" — and none of
-    them should reach Go as a bare stack trace from a 500.
+    `RETRYABLE_LOAD_ERRORS` is the whole list, and everything else propagates: a
+    permanent misconfiguration (empty spec, `positive_index` out of range, a
+    version missing from `MODELS`, a config that will not parse) becomes a 500
+    with uvicorn's traceback. It used to be a blanket `except Exception`, which
+    made Go retry a broken pin three times and left no record of why.
+
+    The log line carries the version, the exception type and (via `exc_info`) the
+    traceback. Never content: no chat text is in scope this early, and the rule
+    holds anyway.
     """
     try:
         return model_registry.load(entry.version)
-    except Exception as exc:  # noqa: BLE001 - see docstring
+    except RETRYABLE_LOAD_ERRORS as exc:
+        logger.warning(
+            "model unavailable: version=%s error=%s",
+            entry.version,
+            type(exc).__name__,
+            exc_info=True,
+        )
         raise ModelUnavailable(f"{entry.spec.name}: {type(exc).__name__}: {exc}") from exc
 
 
@@ -216,7 +278,9 @@ def _model_results(items: list[dict], entry: model_registry.ModelEntry) -> list[
     if scored_at:
         rows = encoder.probabilities([contents[index] for index in scored_at])
         if len(rows) != len(scored_at):
-            raise ModelUnavailable(
+            # Misaligned rows would mislabel every later message in the block.
+            # A retry cannot fix that, so it is a 500, not a `ModelUnavailable`.
+            raise RuntimeError(
                 f"{entry.version}: {len(rows)} probability rows for {len(scored_at)} texts"
             )
         for index, row in zip(scored_at, rows):

@@ -1,7 +1,8 @@
 """Task 4 RED: FastAPI scaffold + GET /health.
 
 Contract pinned here:
-- GET /health -> 200 with exactly the keys {status, model_loaded}
+- GET /health -> 200 with exactly the keys
+  {status, model_loaded, model_version, available_versions}
 - module-level `app` exists so `uvicorn app.main:app` works
 - the service never imports sqlite3 (hard spec constraint: Python never opens the db)
 """

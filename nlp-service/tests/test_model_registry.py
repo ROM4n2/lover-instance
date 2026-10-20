@@ -112,6 +112,16 @@ def test_load_builds_each_version_once(monkeypatch):
     assert directories[0].name == "erlangshen-110m-sentiment"
 
 
+def _three_files() -> dict[str, str]:
+    """A spec that pins the three real file names. Nothing downloads it here.
+
+    `files={}` used to stand in for "some spec", which quietly blessed a config
+    that would make `ensure_model` return an empty directory and `load` report a
+    working model. `load` now refuses it, so fixtures spell out the real names.
+    """
+    return {"config.json": "a" * 64, "model_quantized.onnx": "b" * 64, "tokenizer.json": "c" * 64}
+
+
 def test_load_applies_the_entry_max_length(monkeypatch):
     _stub_build(monkeypatch)
     monkeypatch.setitem(
@@ -119,7 +129,7 @@ def test_load_applies_the_entry_max_length(monkeypatch):
         "tiny-v1",
         ModelEntry(
             version="tiny-v1",
-            spec=ModelSpec(name="tiny", revision="main", files={}),
+            spec=ModelSpec(name="tiny", revision="main", files=_three_files()),
             positive_index=1,
             tau=0.25,
             max_length=64,
@@ -140,7 +150,7 @@ def test_load_rejects_a_positive_index_outside_the_output_columns(monkeypatch):
         "bad-v1",
         ModelEntry(
             version="bad-v1",
-            spec=ModelSpec(name="bad", revision="main", files={}),
+            spec=ModelSpec(name="bad", revision="main", files=_three_files()),
             positive_index=-1,
             tau=0.25,
         ),
@@ -148,6 +158,36 @@ def test_load_rejects_a_positive_index_outside_the_output_columns(monkeypatch):
 
     with pytest.raises(ValueError, match="positive_index"):
         model_registry.load("bad-v1")
+
+
+def test_load_rejects_an_empty_spec_without_downloading(monkeypatch):
+    """An empty `files` map is not "no files needed", it is a broken pin.
+
+    `ensure_model` would satisfy it by returning an empty directory (fail-open),
+    and the failure would then surface as an onnxruntime error about a missing
+    `config.json`. Refusing here keeps the message at the configuration that is
+    actually wrong — and after Task 3's narrowed `except`, this reaches the caller
+    as a 500 instead of a retryable 503.
+    """
+    downloads: list[ModelSpec] = []
+    monkeypatch.setattr(
+        model_registry, "ensure_model", lambda spec, **kwargs: downloads.append(spec)
+    )
+    monkeypatch.setitem(
+        model_registry.MODELS,
+        "empty-v1",
+        ModelEntry(
+            version="empty-v1",
+            spec=ModelSpec(name="empty", revision="main", files={}),
+            positive_index=1,
+            tau=0.25,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="files"):
+        model_registry.load("empty-v1")
+
+    assert downloads == [], "an empty spec must be refused before any download"
 
 
 def test_load_unknown_version_raises_instead_of_downloading(monkeypatch):

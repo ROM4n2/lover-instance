@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient
 
 from app import model_registry
 from app.main import create_app
-from app.model_store import ModelIntegrityError
+from app.model_store import ModelIntegrityError, ModelSpec
 from app.score import MAX_ITEMS, score_batch
 from app.sentiment_lexicon import MODEL_VERSION
 from app.tokenize import countable_tokens
@@ -43,6 +43,15 @@ client = TestClient(create_app())
 
 ERLANGSHEN = "erlangshen-110m-v1"
 DISTILBERT = "distilbert-multilingual-v1"
+
+
+def _three_files() -> dict[str, str]:
+    """A spec that pins the three real file names; nothing is downloaded here.
+
+    An empty `files` map is not a legal spec — `model_registry.load` now refuses
+    it — so fixtures that only need *a* spec still spell out what one holds.
+    """
+    return {"config.json": "a" * 64, "model_quantized.onnx": "b" * 64, "tokenizer.json": "c" * 64}
 
 
 def _batch(size: int) -> list[dict]:
@@ -285,9 +294,82 @@ def test_unavailable_weights_are_503_not_400_and_not_500(monkeypatch, error):
     assert "今天特别开心" not in resp.text
 
 
+def test_permanent_load_failures_are_not_the_retryable_503(monkeypatch):
+    """A misconfiguration is 500, not 503.
+
+    Go retries every 5xx three times and reads only `code`, so a permanent
+    failure dressed as `model_unavailable` costs three downloads and reports
+    nothing: the one thing an operator needs is the traceback a 500 leaves in
+    the service log. The empty spec is the concrete case the plan named for this
+    task (see `model_registry.load`), and `KeyError` is the other one the old
+    `except Exception` swallowed.
+    """
+    permanent = [
+        ValueError("empty-v1: spec pins no files"),
+        KeyError("no-such-version"),
+    ]
+    no_rethrow = TestClient(create_app(), raise_server_exceptions=False)
+
+    for error in permanent:
+        def load(version: str, _error=error):
+            raise _error
+
+        monkeypatch.setattr(model_registry, "load", load)
+        resp = no_rethrow.post("/score", json={"model_version": ERLANGSHEN, "items": _batch(2)})
+
+        assert resp.status_code == 500, f"{type(error).__name__} was dressed up as retryable"
+        assert "model_unavailable" not in resp.text
+        assert "今天特别开心" not in resp.text
+
+
+def test_the_band_boundary_itself_still_states_an_opinion():
+    """`p == 0.5 ± tau` speaks, and both sides read it the same way.
+
+    `apply_neutral_band` has always been strict (`|p - 0.5| < tau`), and Task 1's
+    mutation tests pin it that way: the band is the width of "no opinion", not a
+    threshold to round. `_polarity` had drifted to `p > 0.5 + tau` / `p < 0.5 -
+    tau`, which turns the exact boundary into a shrug; tau = 0.5 keeps the
+    arithmetic exact so the test is about the comparison, not about rounding.
+    """
+    from app.score import _polarity
+
+    entry = model_registry.ModelEntry(
+        version="boundary-v1",
+        spec=ModelSpec(name="boundary", revision="main", files=_three_files()),
+        positive_index=1,
+        tau=0.5,
+    )
+    labels = ["Negative", "Positive"]
+
+    high = _polarity([0.5, 0.5 + entry.tau], labels, entry)
+    low = _polarity([0.5, 0.5 - entry.tau], labels, entry)
+
+    assert high == pytest.approx(1.0), "p == 0.5 + tau came back neutral"
+    assert low == pytest.approx(-1.0), "p == 0.5 - tau came back neutral"
+
+
+def test_three_class_model_without_a_negative_label_refuses_to_guess():
+    """No `neg*` column means the argmax cannot be signed; say so.
+
+    Returning 0.0 there would file a confident negative prediction as "no
+    opinion", which is unlabelled substitution in the other direction.
+    """
+    from app.score import _polarity
+
+    entry = model_registry.ModelEntry(
+        version="nameless-v1",
+        spec=ModelSpec(name="nameless", revision="main", files=_three_files()),
+        positive_index=0,
+        tau=0.0,
+    )
+
+    with pytest.raises(RuntimeError, match="negative"):
+        _polarity([0.1, 0.1, 0.8], ["positive", "neutral", "sad"], entry)
+
+
 def test_limits_still_apply_on_the_model_path(monkeypatch):
     encoder = FakeEncoder({}, ["Negative", "Positive"])
-    _stub_load(monkeypatch, encoder)
+    load_calls = _stub_load(monkeypatch, encoder)
 
     too_many = client.post(
         "/score", json={"model_version": ERLANGSHEN, "items": _batch(MAX_ITEMS + 1)}
@@ -303,6 +385,7 @@ def test_limits_still_apply_on_the_model_path(monkeypatch):
     assert too_many.status_code == 413
     assert huge.status_code == 413
     assert encoder.batches == [], "an over-limit batch must be refused before inference"
+    assert load_calls == [], "an over-limit batch must not download or build a model"
 
 
 def test_score_batch_refuses_an_unknown_version_without_falling_back():

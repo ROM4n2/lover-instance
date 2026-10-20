@@ -128,8 +128,20 @@ def load(version: str) -> Encoder:
     `get` first, so this only fires for a direct, unvalidated call) and lets
     `model_store` / `onnxruntime` failures through unchanged: turning them into
     something friendlier here would hide which layer failed.
+
+    An entry that pins no files is a `ValueError`, not a load: `ensure_model`
+    would satisfy an empty spec by returning an empty directory (fail-open), and
+    the real fault would then surface far away as an onnxruntime complaint about
+    a missing `config.json`. Task 2 recorded this and left the check to the
+    wiring; `score.py` turns a `ValueError` into a 500, so the misconfiguration
+    is visible instead of retried.
     """
     entry = MODELS[version]
+
+    if not entry.spec.files:
+        raise ValueError(
+            f"{version}: spec pins no files, so there is nothing to verify or load"
+        )
 
     cached = _CACHE.get(version)
     if cached is not None:
