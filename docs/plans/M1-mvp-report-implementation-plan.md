@@ -783,7 +783,7 @@
 **验收标准（MUST ALL，逐条对齐 spec §指标体系 M1）:**
 - [x] `go test ./...` 全绿；`pytest fixtures/ -q` 与 `nlp-service` 测试全绿。（11 + 38 passed）
 - [x] 用 `workmem/evidence/full/wechat_messages.json`（32624 条真实消息）跑通 CLI（**不手动传 `--talker`**，验证自动推断路径）。
-- [~] 产出 `report.html`：**零外部请求** ✅（判据是 `report.ExternalRefs(html)` 返回空，**不是** `grep -cE 'https?://'`——后者在内联 echarts 上必然 ≥6，实测 6 处命中）；**双击可在浏览器打开 + 断网渲染** ⚠️ **本机未安装任何浏览器，未能验证**，需用户手动确认。
+- [x] 产出 `report.html`：**零外部请求** ✅（判据是 `report.ExternalRefs(html)` 返回空，**不是** `grep -cE 'https?://'`——后者在内联 echarts 上必然 ≥6，实测 6 处命中）；**浏览器渲染 + 断网渲染** ✅（Edge 155 headless + CDP 真实等待，全程 `--host-resolver-rules="MAP * ~NOTFOUND"` 阻断解析；8 个图表逐个统计 canvas 已绘像素，词云各约 3.9 万）。
 - [x] 报告含且**非空**：核心统计卡片、24×7 热力图、双方词云、表情频率、会话类指标（发起方占比 / 每日首末条 / 话轮平衡）、情感基线（7 类占比 + 情绪雷达 + 模型眼中的正负消息比）、被排除类型分布、**固定免责面板**。
 - [x] 隐私复查：`git status` 中无 `*.db` / `workmem/` / `*.report.html`；`git check-ignore` 对 `nlp-service/data/` 下的文件返回**非 0**（证明词典确实入库）；日志抽查无 content/talker 字面值。
 - [x] 记录报告文件体积与各阶段耗时到 `M1-ACCEPTANCE.md`。
@@ -792,7 +792,8 @@
 > **验收结果（2026-10-20）**：见 [workmem/evidence/M1-ACCEPTANCE.md](../../workmem/evidence/M1-ACCEPTANCE.md)（本地文件，`workmem/` 已 ignore）。
 > 真实数据跑通并**暴露 4 个种子数据构造不出的缺陷**，全部先补失败测试再修：情绪中性桶的两种口径打架、话轮平衡进度条渲染出 126.8%/−26.8%、续跑把「已完成」报成「部分覆盖」、词云里 `，` 排第三。
 > 全量运行与续跑运行产出的报告**逐字节相同**；报告 1,088,612 字节；单文件内联后无需网络。
-> **未验证**：浏览器渲染（无浏览器）与断网渲染，留给用户；词云插件在 Node SSR 下无法验证注册。**未达成**：spec 的「日均月趋势」（计划 D4 亦未列，属既有缺口）。
+> **浏览器与断网渲染已验证**（Edge + CDP，DNS 全阻断）。**未达成**：spec 的「日均月趋势」（计划 D4 亦未列，属既有缺口）。
+> **方法学教训**：`--virtual-time-budget` + `--screenshot` **不能**用来判断异步图表是否渲染——虚拟时间压扁定时器，词云布局没跑完就截图，本机一度据此误判「词云插件没注册」；换成 CDP + 真实等待后两个词云各画出约 3.9 万像素。`--dump-dom` 对含 1 MB 内联脚本的页面同样会输出被破坏的序列化结果。
 
 **Subagent Prompt Scaffold (for /dfs-exec):**
 > "Execute Task 15: M1 端到端验收。
