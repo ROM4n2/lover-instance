@@ -32,14 +32,73 @@
 
 设计与决策见 [docs/specs/](docs/specs/) 与 [docs/adr/](docs/adr/)；M1 的实施计划与执行期偏离见 [docs/plans/M1-mvp-report-implementation-plan.md](docs/plans/M1-mvp-report-implementation-plan.md)。
 
-## 快速开始（M1）
+## 快速开始（四条命令）
+
+> **前置**：Go 1.26（`backend-go/go.mod`）与 Python 3.11+（`nlp-service`；可用 `LOVER_PYTHON` 指定解释器）。
+> 聊天记录 JSON 由你自装的第三方工具导出——**本仓库不含导出/解密代码**；导出契约见 `docs/adr/ADR-0001`
+> （字段 `server_id / source_offset / ts / conversation_id / sender_wxid / msg_type / is_self / content`）。
+> 首次运行会先检查 Python 依赖，缺什么就报什么；**不加 `--yes` 绝不自动安装**。
+
+```bash
+# 0. 构建一次（Windows 用 -o lover.exe）
+cd backend-go && go build -o lover ./cmd/lover
+```
+
+在仓库的任意子目录下运行即可：`lover` 会向上找 `backend-go/go.mod` + `nlp-service/app` 定位仓库根，也可用 `LOVER_REPO_ROOT` 直接指定。
+
+```bash
+# 1. 首次运行：检查依赖 → 起 NLP 服务 → 分析最新导出 → 打开报告
+./lover
+./lover --yes                                    # 依赖缺失时才允许自动 pip install
+./lover --export /path/to/wechat_messages.json    # 指定导出文件（默认是导出目录里最新的 *.json）
+
+# 2. 周更：同一条流水线，只报新增
+./lover sync --export /path/to/wechat_messages.json
+# → 新增 128 条 / 打分 128 条 / 覆盖率 32400/32624
+
+# 3. Dashboard：bundle 缺失或过期就先 npm run build，然后 serve
+./lover dash                                     # http://127.0.0.1:8787 ，Ctrl-C 停止
+
+# 4. 体检：报告缺什么，不改任何东西
+./lover doctor
+```
+
+模型是**显式升级**，不是首次运行的一部分：
+
+```bash
+./lover model list                      # 看装了什么（只哈希本地文件，零网络）
+./lover model add erlangshen-110m-v1    # 下载并按 sha256 校验每一个 pin 住的文件
+./lover model verify                    # 重新哈希，列出与 pin 不符的文件
+./lover model rm erlangshen-110m-v1 --yes
+./lover --export wechat_messages.json --sentiment-version erlangshen-110m-v1   # 用模型版重打
+```
+
+**零模型开箱**：默认走词典版情感（`lexicon-hownet-v1`），全程 **0 MB 下载**——`lover` 和 `lover sync` 永远不会替你下载权重。想要模型版就显式 `lover model add`，`list` 会如实区分「未安装（从没装过）」「部分就位（上次 add 没跑完）」「文件在但内容与 pin 不符」三种情况，并给出对应的下一步命令。
+
+每条子命令都有 `-h`。常用参数：`--db`（默认 `%LOCALAPPDATA%\lover-instance\data.db`）、`--talker`（导出含多个会话时必填，单会话自动推断）、`--skip-sentiment`（只出行为报告，覆盖度会如实标注为不完整）、`--out`、`--nlp-url`。
+
+### 退出码（脚本和双击都用得到）
+
+| 码 | 含义 | 遇到该做什么 |
+|---|---|---|
+| 0 | 跑完了 | 报告已写出并打开（`sync` 只打印一行） |
+| 1 | 分析本身失败 | 看 stderr 指名的阶段；修好后重跑，续跑不会重打分 |
+| 2 | 命令行有误 | 改命令；每条子命令都有 `-h` |
+| 3 | 依赖缺失 | Python 包 → `python -m pip install -r nlp-service/requirements.txt`；`dash` 还需要 npm 与 Go 工具链 |
+| 4 | 端口被占用 | 消息里给出占用者的 PID，停掉它；或 `--port` / `--nlp-url` 换一个 |
+| 5 | 服务起来了但 60 秒内没 ready | 手工起一次看它卡在哪：`cd nlp-service && python -m uvicorn app.main:app --port 8000` |
+
+Ctrl-C（SIGINT）会收掉整个服务进程组、把 job 行按取消关闭，不留孤儿进程；此时退出码为 1 并打印「已中断」，重跑同一条命令即可接着跑。
+
+### 进阶：直接用底层 `analyze`
+
+四条命令与 `analyze` 走的是同一个 `internal/app.Run`，共享全部默认值。`analyze` 的价值在于细粒度开关（`--sentiment-version`、`--rescore-words`、`--take-over` 等）和脚本友好的三码退出；需要自己起服务、自己看每一步时用它：
 
 ```bash
 # 1. 在宿主机用你自己选择的工具导出聊天记录 JSON（本仓库不含导出/解密代码）。
-#    导出契约见 docs/adr/ADR-0001：字段 server_id / source_offset / ts / conversation_id /
-#    sender_wxid / msg_type / is_self / content。
+#    导出契约见 docs/adr/ADR-0001。
 
-# 2. 启动词典基线 NLP 服务（M1 零模型，只加载自建词表）
+# 2. 启动词典基线 NLP 服务（零模型，只加载自建词表）
 cd nlp-service && python -m uvicorn app.main:app --port 8000
 curl -s http://127.0.0.1:8000/health    # 期望 {"status":"ready",...,"model_version":"lexicon-hownet-v1"}
 
@@ -50,7 +109,7 @@ cd backend-go && go build -o analyze ./cmd/analyze
 
 CLI 退出码：`0` 完成 / `1` 执行失败 / `2` 命令行有误。成功时 stdout 是一行 JSON 摘要（条数、覆盖度、各阶段耗时、报告体积），**不含任何消息正文与会话标识**——只有会话指纹。
 
-常用参数：`--talker`（导出含多个会话时必填，单会话自动推断）、`--list-talkers`（列出已入库的会话键）、`--db`（默认 `%LOCALAPPDATA%\lover-instance\data.db`）、`--skip-sentiment`（只出行为报告，覆盖度会如实标注为不完整）、`--nlp-url`。
+常用参数：`--talker`（导出含多个会话时必填，单会话自动推断）、`--list-talkers`（列出已入库的会话键）、`--db`、`--skip-sentiment`、`--nlp-url`。
 
 ## M2：换一个情感模型，与词典版并列比较
 
@@ -99,10 +158,18 @@ cd ../backend-go && go build -o server ./cmd/server
 - 本机 `qwen3.5:4b` 可用但**会编形状**（「先降后升再回落」这类趋势点里没有的话），数字是对的。分享前请通读那一段。
 - 月度词云只画对方侧；没有月度数据时报告会写「需要重扫」，不画空图。
 
-### 三条容易踩的坑
+## 技术栈说明，与三条容易踩的坑
 
-1. **改了 `backend-go/internal/report/templates/*.tmpl` 必须重新 `go build`。** 模板经 `go:embed` 编进二进制，不重编译就是在跑旧模板。
+- **Go 1.26**（`backend-go`）：数据接入适配器、SQLite 存储（WAL）、长任务编排（单飞/取消/检查点续跑）、REST API、HTML 报告渲染（`go:embed`）。入口有三：`cmd/lover`（四条命令）、`cmd/analyze`（底层 CLI）、`cmd/server`（Dashboard 服务）。
+- **Python 3.11+**（`nlp-service`，无状态、不持库）：jieba 分词、词典情感基线、SKEP/RoBERTa（ONNX）。由 `lover` 作为子进程拉起，并等到 `/health` 报 `ready` 才继续。
+- **Vue3 + ECharts**（`frontend`）：`npm run build` 产物落在 `backend-go/internal/web/dist`（不入库）。`lover dash` 在 bundle 缺失或比 `frontend/src` 旧时自动构建；npm 不在 PATH 时跳过 Dashboard，报告路径不受影响。
+- **本地 Ollama（可选）**：叙事走 OpenAI 兼容接口，**只接受回环地址**，云 API 一律 deny-by-default；`--ollama-model` 必填，不给就不出叙事。
+- **默认值只有一个来源**：`backend-go/internal/app/paths.go`（数据库、NLP 地址、Ollama 地址、导出目录、Dashboard 地址）。任何命令都从这里取默认值，不允许自带第二份。
+
+三条容易踩的坑（M1–M4 就存在，有了四条命令之后依然成立）：
+
+1. **改了 `backend-go/internal/report/templates/*.tmpl` 必须重新 `go build`。** 模板经 `go:embed` 编进二进制，不重编译就是在跑旧模板——用 `lover` 也一样，它跑的是编译好的二进制。
 2. **改了词表或分词后，已入库的词频不会自动回填。** 待办集按 anti-join 判定，已打分的块不会再进入待办集；需删掉 `word_freq` 的行或删库重跑。
-3. **数据库不要放在 OneDrive / 坚果云 / 百度网盘目录下。** CLI 会在建库前拒绝这类路径（Windows 的「已知文件夹移动」会把 `Documents` 悄悄重定向进 OneDrive）。
+3. **数据库不要放在 OneDrive / 坚果云 / 百度网盘目录下。** CLI 会在建库前拒绝这类路径（Windows 的「已知文件夹移动」会把 `Documents` 悄悄重定向进 OneDrive）；默认路径落在 `%LOCALAPPDATA%\lover-instance\` 正是因为这个。
 
 > 数据库文件、导出 JSON、报告、模型权重均已在 `.gitignore`，不会入库。报告是自包含单页，打开时不产生任何网络请求（由 `report.ExternalRefs` 断言）。
