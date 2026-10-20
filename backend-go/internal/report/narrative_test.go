@@ -170,6 +170,33 @@ VALUES ('chatlog-keeper','leak',?, ?, 'wxid_peer', 0, 1, 0, 'MUST-NOT-LEAK', 'h'
 	}
 }
 
+// TestNarrative_InputCarriesNoWords pins the decision to keep vocabulary out of
+// the narrator's input.
+//
+// The first real run over this conversation's own export produced a paragraph
+// naming two people — the third most frequent token in its word cloud is a
+// personal name, 1,016 times, and no NER stands between that cloud and the model.
+// The report is a file meant to be shared, so a name the sender never typed in
+// the prompt would travel with it. Numbers only.
+func TestNarrative_InputCarriesNoWords(t *testing.T) {
+	s := newStore(t)
+	seedConversation(t, s)
+	if _, err := s.DB().Exec(`INSERT INTO word_freq_v2 (talker, period, is_self, model_version, word, cnt)
+VALUES (?, '2026-08', 0, ?, '会出现在词云里的人名', 9)`, testTalker, testModelVersion); err != nil {
+		t.Fatalf("insert a monthly word row: %v", err)
+	}
+
+	fake := &fakeNarrator{text: "ok"}
+	view := collectWith(t, s, fake)
+	if len(view.Words.Partner) == 0 && len(view.Monthly) == 0 {
+		t.Fatal("the fixture has no words, so this test proves nothing")
+	}
+	if len(fake.got.TopWordsSelf) != 0 || len(fake.got.TopWordsPartner) != 0 ||
+		len(fake.got.TopExpressions) != 0 || len(fake.got.MonthlyTop) != 0 {
+		t.Errorf("the narrator received vocabulary: %+v", fake.got)
+	}
+}
+
 // TestMonthly_WithDataRendersTheMonthAndWord is the positive path for the
 // monthly chart: a month's words show up in the payload the chart reads.
 func TestMonthly_WithDataRendersTheMonthAndWord(t *testing.T) {

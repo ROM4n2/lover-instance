@@ -63,7 +63,7 @@ func TestNewOllama_RejectsEmptyModel(t *testing.T) {
 func TestOllama_TimeoutApplies(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
-		_ = json.NewEncoder(w).Encode(chatResponse{Choices: []chatChoice{{Message: chatMessage{Content: "late"}}}})
+		_ = json.NewEncoder(w).Encode(chatResponse{Message: chatMessage{Content: "late"}})
 	}))
 	defer srv.Close()
 
@@ -80,8 +80,9 @@ func TestOllama_TimeoutApplies(t *testing.T) {
 	}
 }
 
-// TestOllama_RequestShape pins the OpenAI-compatible request: method, path,
-// stream:false, model and the prompt as the single user message.
+// TestOllama_RequestShape pins the request: method, path, stream:false,
+// think:false, the token ceiling, the model, and the prompt as the single user
+// message.
 func TestOllama_RequestShape(t *testing.T) {
 	const prompt = "给我讲个故事"
 	var (
@@ -93,7 +94,7 @@ func TestOllama_RequestShape(t *testing.T) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		gotRaw, _ = io.ReadAll(r.Body)
-		_ = json.NewEncoder(w).Encode(chatResponse{Choices: []chatChoice{{Message: chatMessage{Content: "ok"}}}})
+		_ = json.NewEncoder(w).Encode(chatResponse{Message: chatMessage{Content: "ok"}})
 	}))
 	defer srv.Close()
 
@@ -112,11 +113,17 @@ func TestOllama_RequestShape(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if gotPath != "/v1/chat/completions" {
+	if gotPath != "/api/chat" {
 		t.Errorf("path = %q, want /v1/chat/completions", gotPath)
 	}
 	if !strings.Contains(string(gotRaw), `"stream":false`) {
 		t.Errorf("request body missing \"stream\":false: %s", gotRaw)
+	}
+	if !strings.Contains(string(gotRaw), `"think":false`) {
+		t.Errorf("request body does not turn thinking off: %s", gotRaw)
+	}
+	if !strings.Contains(string(gotRaw), `"num_predict"`) {
+		t.Errorf("request body does not cap the generation: %s", gotRaw)
 	}
 	var sent chatRequest
 	if err := json.Unmarshal(gotRaw, &sent); err != nil {
@@ -128,8 +135,11 @@ func TestOllama_RequestShape(t *testing.T) {
 	// A 150-250 character answer does not need thousands of tokens, and a model
 	// that thinks out loud will spend the whole timeout doing it: measured on
 	// qwen3.5:4b, one request emitted 4,311 tokens for a one-paragraph answer.
-	if sent.MaxTokens != maxResponseTokens {
-		t.Errorf("max_tokens = %d, want %d: the request has to cap what the model may write", sent.MaxTokens, maxResponseTokens)
+	if sent.Options.NumPredict != maxResponseTokens {
+		t.Errorf("num_predict = %d, want %d: the request has to cap what the model may write", sent.Options.NumPredict, maxResponseTokens)
+	}
+	if sent.Think {
+		t.Error("think = true, want false: a reasoning model spends the whole budget before it answers")
 	}
 	if len(sent.Messages) != 1 {
 		t.Fatalf("messages length = %d, want 1", len(sent.Messages))
@@ -173,7 +183,7 @@ func TestOllama_Non2xxHidesBody(t *testing.T) {
 func TestOllama_TruncatesLongOutput(t *testing.T) {
 	long := strings.Repeat("a", 5000)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(chatResponse{Choices: []chatChoice{{Message: chatMessage{Content: long}}}})
+		_ = json.NewEncoder(w).Encode(chatResponse{Message: chatMessage{Content: long}})
 	}))
 	defer srv.Close()
 

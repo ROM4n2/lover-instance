@@ -157,6 +157,18 @@ func monthlyView(ctx context.Context, s *store.Store, talker, sentimentModelVers
 // Rejected on purpose: Meta.TalkerHash, the raw talker, and every message body.
 // The word lists carry only .Word, never a source sentence, and the date range
 // is formatted to day precision so no timestamp rides along.
+// The word lists are deliberately NOT filled, and this is a privacy decision
+// rather than a stylistic one.
+//
+// A real word cloud carries people's names: on this conversation's own export
+// the third most frequent token was a personal name, 1,016 times, and the M1
+// notes already record that no NER stands in the way. Fed to the narrator, those
+// words come back out in a paragraph — and this file is meant to be shared, so a
+// name the sender never typed in the prompt would travel with it. The model also
+// turns word lists into specific-sounding claims it cannot support.
+//
+// So the narrator sees numbers and their shapes, not vocabulary. A duller
+// paragraph is the price; the report's own charts still show the words.
 func narrativeInput(view View) narrative.Input {
 	input := narrative.Input{
 		Days:            view.Summary.DayCount,
@@ -166,16 +178,7 @@ func narrativeInput(view View) narrative.Input {
 		RangeStart:      dayString(view.Meta.RangeStartMs),
 		RangeEnd:        dayString(view.Meta.RangeEndMs),
 		EmotionShares:   view.Emotion.Shares,
-		TopWordsSelf:    wordList(view.Words.Self, 15),
-		TopWordsPartner: wordList(view.Words.Partner, 15),
-		TopExpressions:  wordList(view.Emoji.Partner, 8),
 		TrendPoints:     trendPointsForNarrative(view.Trend.Points),
-	}
-	if len(view.Monthly) > 0 {
-		input.MonthlyTop = make(map[string][]string, len(view.Monthly))
-		for _, month := range view.Monthly {
-			input.MonthlyTop[month.Month] = wordList(month.Words, 8)
-		}
 	}
 	return input
 }

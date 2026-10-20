@@ -83,19 +83,23 @@ func (p *ollamaProvider) Generate(ctx context.Context, prompt string) (string, e
 		Model:    p.model,
 		Messages: []chatMessage{{Role: "user", Content: prompt}},
 		Stream:   false,
+		// Think off, explicitly. This endpoint is Ollama's own /api/chat rather
+		// than the OpenAI-compatible shim precisely because that shim has no way
+		// to say it: left on, a reasoning model spends the whole budget before it
+		// answers and hands back an empty content field. Measured on
+		// qwen3.5:4b: with thinking it emitted 4,311 tokens and timed out at two
+		// minutes; with it off, the same prompt came back in one second.
+		Think: false,
 		// The answer is 150-250 characters, so a few hundred tokens is the
-		// ceiling, not the target. Without it a chatty model spends the whole
-		// timeout on tokens nobody reads: measured on qwen3.5:4b, one request
-		// produced 4,311 tokens for a one-paragraph answer and blew past two
-		// minutes. A cap turns "hangs" into "long", and truncation is already
-		// handled on the way out.
-		MaxTokens: maxResponseTokens,
+		// ceiling, not the target. A cap turns "hangs" into "long", and
+		// truncation is already handled on the way out.
+		Options: chatOptions{NumPredict: maxResponseTokens},
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("narrative: encode request: %w", err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/api/chat", bytes.NewReader(encoded))
 	if err != nil {
 		return "", fmt.Errorf("narrative: build request: %w", err)
 	}
@@ -118,10 +122,7 @@ func (p *ollamaProvider) Generate(ctx context.Context, prompt string) (string, e
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&parsed); err != nil {
 		return "", fmt.Errorf("narrative: decode response: %w", err)
 	}
-	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("narrative: ollama returned no choices")
-	}
-	text := cleanOutput(parsed.Choices[0].Message.Content)
+	text := cleanOutput(parsed.Message.Content)
 	if text == "" {
 		// A reasoning model can spend the entire max_tokens budget thinking and
 		// hand back an empty content field. That is a failed request, not a
@@ -143,10 +144,17 @@ func cleanOutput(s string) string {
 }
 
 type chatRequest struct {
-	Model     string        `json:"model"`
-	MaxTokens int           `json:"max_tokens"`
-	Messages  []chatMessage `json:"messages"`
-	Stream    bool          `json:"stream"`
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	Stream   bool          `json:"stream"`
+	Think    bool          `json:"think"`
+	Options  chatOptions   `json:"options"`
+}
+
+// chatOptions is Ollama's generation knob set. num_predict is its name for a
+// token ceiling; the OpenAI-compatible field name is not accepted here.
+type chatOptions struct {
+	NumPredict int `json:"num_predict"`
 }
 
 type chatMessage struct {
@@ -155,6 +163,10 @@ type chatMessage struct {
 }
 
 type chatResponse struct {
+	Message chatMessage `json:"message"`
+	// Ollama's own shape has no choices array; the OpenAI-compatible one does.
+	// Reading the field this endpoint actually sends keeps an empty answer from
+	// looking like a successful one.
 	Choices []chatChoice `json:"choices"`
 }
 
