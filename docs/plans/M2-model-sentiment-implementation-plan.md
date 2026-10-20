@@ -406,11 +406,18 @@
 ### Task 8: M2 验收 [Tier: 3-Critical] [Mode: HITL]
 
 **判据**
-- [ ] `go test ./...` / `pytest` 全绿；真实导出上两个 `model_version` 共存，词频**不翻倍**（Task 4 的守卫在真实数据上复跑）
-- [ ] 中途 kill Go 进程后重启，`analysis_jobs` 续跑且**不重打分**
-- [ ] 报告能切换两版并显示不一致率；曲线缺日处断开
-- [ ] `BAKEOFF.md` 的结论与报告实际展示的一致（模型没赢就写没赢）
-- [ ] 记录各阶段耗时到 `workmem/evidence/M2-ACCEPTANCE.md`
+- [x] `go test ./...` / `pytest` 全绿；真实导出上两个 `model_version` 共存，词频**不翻倍**（Task 4 的守卫在真实数据上复跑）
+- [x] 中途 kill Go 进程后重启，`analysis_jobs` 续跑且**不重打分**
+- [x] 报告能切换两版并显示不一致率；曲线缺日处断开
+- [ ] `BAKEOFF.md` 的结论与报告实际展示的一致（模型没赢就写没赢）—— **卡在 Task 0 的标签仍是 agent-draft**
+- [x] 记录各阶段耗时到 `workmem/evidence/M2-ACCEPTANCE.md`
+
+**验收实测（2026-10-20，真实导出 32,624 条 / 22,093 条可分析，详见 `workmem/evidence/M2-ACCEPTANCE.md`）**：
+- 三版共存（词典 / erlangshen / distilbert 各 22,093 行），`word_freq_v2` 三版各 17,869 行 / 88,049 计数——**不翻倍**。
+- kill -9 于 2,304/22,093 处 → 立即重启被活性判定拦住（exit 1）→ 等 95s 重启 → `marked 1 interrupted`，`scored_this_run=19,789`（不是 22,093）。
+- 降 checkpoint 代价：被杀后必须等 `StaleAfter=90s` 才能续跑。`--take-over` 显式接管参数是待定项。
+- 两版对照（distilbert vs 词典）：正向 13,855 vs 4,047、中性 2,580 vs 17,258、**不一致率 69.8%（15,418 / 22,093）**。
+- 耗时：erlangshen 全量评分 **276s**（≈80 msg/s），不是上文估算的 ≈170s —— 估算只算了纯推理吞吐，实际含分词、HTTP、87 个块与逐块事务。distilbert 续跑 19,789 条 158s；整轮重跑（0 待打分）751ms。
 
 ---
 

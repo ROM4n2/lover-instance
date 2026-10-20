@@ -521,7 +521,7 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		// heartbeat has stopped. So a slot still held here is held by a process
 		// that is alive, and saying so is what stops the reader from deleting a
 		// row — or waiting — for a job nobody is working on.
-		return "", 0, fmt.Errorf("a %s job already holds this conversation (job %d, status %q) and its heartbeat is still current, so another process is still working on it; this run is not starting a second scoring pass — re-run once that job has finished", jobKindSentiment, job.ID, job.Status)
+		return "", 0, fmt.Errorf("a %s job already holds this conversation (job %d, status %q) and its heartbeat is still current, so another process is still working on it; this run is not starting a second scoring pass — if that process is gone, wait for its heartbeat to go stale (about %s) and re-run", jobKindSentiment, job.ID, job.Status, jobs.StaleAfter)
 	}
 
 	// The beat and the per-block callback write the same row from two goroutines,
