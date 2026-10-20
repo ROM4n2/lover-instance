@@ -25,6 +25,9 @@ reports/
 *.sqlite3
 *_messages.json
 *.report.html
+# CLI 的 --out 默认值就是 report.html（没有前导点），上面那条 *.report.html 匹配不到它；
+# 少了这一行，在仓库根目录跑一次默认命令就会留下一个含聊天聚合数据的未忽略文件。
+report.html
 .chatlog/
 workmem/
 
