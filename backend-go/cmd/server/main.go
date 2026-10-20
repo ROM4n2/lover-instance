@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"lover-instance/backend-go/internal/api"
 	"lover-instance/backend-go/internal/store"
 )
@@ -184,6 +186,14 @@ func execute(ctx context.Context, cfg options, stderr io.Writer) error {
 	listener, err := net.Listen("tcp", cfg.addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.addr, err)
+	}
+
+	// Release mode unless asked otherwise: Gin's debug mode prints a route
+	// banner and a "switch to release" nag on every start, which is noise in a
+	// tool a person double-clicks. The banner also echoes route patterns, so it
+	// adds nothing a reader cannot get from the binary's own output.
+	if os.Getenv("LOVER_GIN_DEBUG") == "" {
+		gin.SetMode(gin.ReleaseMode)
 	}
 
 	server := &http.Server{
