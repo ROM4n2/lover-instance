@@ -27,6 +27,7 @@ import (
 
 	"lover-instance/backend-go/internal/analyze"
 	"lover-instance/backend-go/internal/ingest"
+	"lover-instance/backend-go/internal/jobs"
 	"lover-instance/backend-go/internal/nlp"
 	"lover-instance/backend-go/internal/report"
 	"lover-instance/backend-go/internal/store"
@@ -46,6 +47,11 @@ const (
 	exportJSONHint = "run the chatlog-keeper exporter first; this repository contains no code that reads the WeChat database"
 
 	defaultNLPURL = "http://127.0.0.1:8000"
+
+	// jobKindSentiment is the analysis_jobs.kind this command produces. It is
+	// one conversation's sentiment pass, which is the unit ADR-0002 calls a
+	// job: minute-scale work that must survive a restart.
+	jobKindSentiment = "sentiment"
 )
 
 func main() {
@@ -147,7 +153,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	started := time.Now()
 
-	result, err := execute(ctx, cfg)
+	result, err := execute(ctx, cfg, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "analyze: %v\n", err)
 		var usage usageError
@@ -233,7 +239,7 @@ type outcome struct {
 	summary summary
 }
 
-func execute(ctx context.Context, cfg options) (outcome, error) {
+func execute(ctx context.Context, cfg options, stderr io.Writer) (outcome, error) {
 	// The check runs before the file is created, not after: a database that
 	// has already been uploaded to a sync client is not recalled by deleting
 	// it locally.
@@ -293,7 +299,7 @@ func execute(ctx context.Context, cfg options) (outcome, error) {
 	sentimentModel := ""
 	scoredThisRun := 0
 	if !cfg.skipSentiment {
-		sentimentModel, scoredThisRun, err = scoreSentiment(ctx, s, cfg, talker)
+		sentimentModel, scoredThisRun, err = scoreSentiment(ctx, s, cfg, talker, stderr)
 		if err != nil {
 			return outcome{}, err
 		}
@@ -390,7 +396,13 @@ func resolveTalker(imported ingest.Report, requested string) (string, error) {
 
 // scoreSentiment asks the service which lexicon it holds, scores the
 // conversation with it, and rolls the polarity into the daily table.
-func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker string) (string, int, error) {
+//
+// The run is recorded in analysis_jobs, because this is the minute-scale stage:
+// a process killed halfway must be resumable, must not be started twice, and
+// must leave a status a reader can trust. The job covers the scoring pass and
+// its rollup together, since a "done" job whose daily table is stale would let
+// the report draw a complete-looking curve from half-written data.
+func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker string, stderr io.Writer) (string, int, error) {
 	client, err := nlp.NewClient(cfg.nlpURL)
 	if err != nil {
 		return "", 0, err
@@ -403,12 +415,66 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		return "", 0, fmt.Errorf("the NLP service at %s reports status %q with no lexicon version; a report must name the model that produced it, so this run is refused until the service is ready", cfg.nlpURL, health.Status)
 	}
 
-	progress, err := analyze.RunSentiment(ctx, s, client, talker, health.ModelVersion, nlp.MaxBatchSize)
+	// Before the slot is asked for: a killed run left its job in 'running', and
+	// without this the next start would find the slot held by a job nobody is
+	// working on. The count goes to stderr rather than the summary line, which
+	// is a fixed machine-readable contract, and it names no conversation and no
+	// message.
+	interrupted, err := jobs.Recover(ctx, s, talker, jobKindSentiment)
 	if err != nil {
-		return health.ModelVersion, progress.Scored, err
+		return "", 0, err
 	}
-	if err := s.RebuildSentimentMetrics(ctx, talker, health.ModelVersion); err != nil {
-		return health.ModelVersion, progress.Scored, err
+	if interrupted > 0 {
+		fmt.Fprintf(stderr, "analyze: marked %d interrupted job(s) from a previous run\n", interrupted)
+	}
+
+	job, _, err := jobs.Start(ctx, s, talker, jobKindSentiment, health.ModelVersion)
+	if err != nil {
+		return "", 0, err
+	}
+
+	var heartbeatErr error
+	progress, runErr := analyze.RunSentimentProgress(ctx, s, client, talker, health.ModelVersion, nlp.MaxBatchSize,
+		func(scored, total int) {
+			// The first failure wins: later heartbeats would be recorded against
+			// a job whose progress is already known to be stale.
+			if heartbeatErr != nil {
+				return
+			}
+			heartbeatErr = jobs.Heartbeat(ctx, s, job.ID, scored, total)
+		})
+	if runErr == nil {
+		// A heartbeat that failed is a database that stopped recording the run.
+		// The scores are committed, so re-running costs only the missing blocks
+		// — cheaper than a job row that understates what was done.
+		runErr = heartbeatErr
+	}
+	if runErr == nil {
+		runErr = s.RebuildSentimentMetrics(ctx, talker, health.ModelVersion)
+	}
+
+	// The job's outcome is derived from the same error the command reports, so
+	// the row and the exit code cannot tell different stories. The error text
+	// never carries message content: the NLP client reports status codes and
+	// codes only, and the pipeline's own wrapping counts blocks.
+	status := jobs.StatusDone
+	message := ""
+	if runErr != nil {
+		status = jobs.StatusFailed
+		message = runErr.Error()
+		if ctx.Err() != nil {
+			status = jobs.StatusCanceled
+			message = ctx.Err().Error()
+		}
+	}
+	if finishErr := jobs.Finish(ctx, s, job.ID, status, message); finishErr != nil {
+		if runErr != nil {
+			return health.ModelVersion, progress.Scored, fmt.Errorf("%w (and the job could not be closed: %v)", runErr, finishErr)
+		}
+		return health.ModelVersion, progress.Scored, finishErr
+	}
+	if runErr != nil {
+		return health.ModelVersion, progress.Scored, runErr
 	}
 	return health.ModelVersion, progress.Scored, nil
 }

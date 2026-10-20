@@ -325,6 +325,74 @@ func TestRunSentiment_RejectsAnOutOfRangeBatchSize(t *testing.T) {
 	}
 }
 
+// TestRunSentimentProgress_ReportsEveryCommittedBlock is what the job heartbeat
+// rides on: the callback runs once per block that actually committed, and the
+// last call agrees with the returned Progress. A callback that fired before the
+// commit, or missed the final block, would leave the job row describing
+// progress the database does not hold.
+func TestRunSentimentProgress_ReportsEveryCommittedBlock(t *testing.T) {
+	ctx := context.Background()
+	s := newAnalyzeStore(t)
+	for i := 0; i < 5; i++ {
+		insertMessage(t, s, string(rune('a'+i)), int64(i)*1000, i%2 == 0, store.AnalyzableMsgType, "你好")
+	}
+
+	server := &scoreServer{}
+	srv := httptest.NewServer(server.handler())
+	defer srv.Close()
+
+	type step struct{ scored, total int }
+	var calls []step
+	progress, err := RunSentimentProgress(ctx, s, newClient(t, srv), "c", testModelVersion, 2, func(scored, total int) {
+		calls = append(calls, step{scored: scored, total: total})
+	})
+	if err != nil {
+		t.Fatalf("RunSentimentProgress() error: %v", err)
+	}
+
+	// Five messages in blocks of two commit three times.
+	want := []step{{2, 5}, {4, 5}, {5, 5}}
+	if len(calls) != len(want) {
+		t.Fatalf("callback ran %d times (%v), want %d: one call per committed block", len(calls), calls, len(want))
+	}
+	for i, got := range calls {
+		if got != want[i] {
+			t.Errorf("callback #%d = %+v, want %+v", i, got, want[i])
+		}
+	}
+	last := calls[len(calls)-1]
+	if last.scored != progress.Scored || last.total != progress.Total {
+		t.Errorf("last callback = %+v but Progress = %+v: the job row and the returned counts must agree",
+			last, progress)
+	}
+}
+
+// TestRunSentimentProgress_DoesNotCallBackWithoutBlocks keeps "nothing to
+// score" from looking like one block of progress, which would make a finished
+// conversation report a scored count it does not have.
+func TestRunSentimentProgress_DoesNotCallBackWithoutBlocks(t *testing.T) {
+	s := newAnalyzeStore(t)
+	insertMessage(t, s, "img", 0, true, 3, "")
+
+	server := &scoreServer{}
+	srv := httptest.NewServer(server.handler())
+	defer srv.Close()
+
+	calls := 0
+	progress, err := RunSentimentProgress(context.Background(), s, newClient(t, srv), "c", testModelVersion, 10, func(scored, total int) {
+		calls++
+	})
+	if err != nil {
+		t.Fatalf("RunSentimentProgress() error: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("callback ran %d times, want 0: no block committed", calls)
+	}
+	if progress.Scored != 0 || progress.Total != 0 {
+		t.Errorf("progress = %+v, want zeros", progress)
+	}
+}
+
 func TestRunSentiment_OnAConversationWithNoTextIsNotAnError(t *testing.T) {
 	s := newAnalyzeStore(t)
 	insertMessage(t, s, "img", 0, true, 3, "")

@@ -460,6 +460,128 @@ func TestRun_LeavesTheAggregateTablesPopulated(t *testing.T) {
 	}
 }
 
+// openDB opens the database a finished run left behind, so a test can read the
+// rows the command wrote rather than trusting its stdout.
+func openDB(t *testing.T, path string) *store.Store {
+	t.Helper()
+	dsn, err := store.DSN(path)
+	if err != nil {
+		t.Fatalf("store.DSN() error: %v", err)
+	}
+	s, err := store.Open(dsn)
+	if err != nil {
+		t.Fatalf("store.Open() error: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// TestRun_RecordsTheSentimentRunAsAJob is the wiring check. This command is the
+// only caller of jobs.Start, so a mistake here — a job that is never finished,
+// progress that is never recorded — would pass every package-level test and
+// still leave a row saying the run never got anywhere.
+func TestRun_RecordsTheSentimentRunAsAJob(t *testing.T) {
+	h := newHarness(t)
+	srv := fakeNLPService(t, "lexicon-hownet-v1")
+	if got := invoke(t, h.args("--nlp-url", srv.URL)...); got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitOK, got.stderr)
+	}
+
+	ctx := context.Background()
+	s := openDB(t, h.db)
+	var status, modelVersion string
+	var done, total int
+	err := s.DB().QueryRowContext(ctx,
+		`SELECT status, model_version, done, total FROM analysis_jobs WHERE kind = 'sentiment'`).
+		Scan(&status, &modelVersion, &done, &total)
+	if err != nil {
+		t.Fatalf("read the job row: %v", err)
+	}
+	if status != "done" {
+		t.Errorf("status = %q, want %q", status, "done")
+	}
+	if modelVersion != "lexicon-hownet-v1" {
+		t.Errorf("model_version = %q, want the version the service reported", modelVersion)
+	}
+	// Four analyzable messages, and the last heartbeat lands before Finish.
+	if done != 4 || total != 4 {
+		t.Errorf("done/total = %d/%d, want 4/4", done, total)
+	}
+}
+
+// TestRun_CreatesNoJobWhenSentimentIsSkipped keeps the job table meaning "a long
+// analysis actually ran". A behavioral-only run finishes in seconds and has
+// nothing to resume.
+func TestRun_CreatesNoJobWhenSentimentIsSkipped(t *testing.T) {
+	h := newHarness(t)
+	if got := invoke(t, h.args("--skip-sentiment")...); got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitOK, got.stderr)
+	}
+	var rows int
+	if err := openDB(t, h.db).DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM analysis_jobs`).Scan(&rows); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("analysis_jobs holds %d rows after a behavioral-only run, want 0", rows)
+	}
+}
+
+// TestRun_MarksAKilledRunAsInterruptedBeforeStartingAgain is the restart path as
+// the user experiences it: the previous run died holding the slot, and the next
+// invocation says so on stderr and gets on with the work instead of colliding
+// with a job nobody owns.
+func TestRun_MarksAKilledRunAsInterruptedBeforeStartingAgain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if out := invoke(t, h.args("--skip-sentiment")...); out.code != exitOK {
+		t.Fatalf("behavioral run failed: %s", out.stderr)
+	}
+
+	// Leave behind exactly what a killed scoring pass leaves behind.
+	stale := openDB(t, h.db)
+	killed, err := stale.InsertJob(ctx, "wxid_peer", "sentiment", "lexicon-hownet-v1")
+	if err != nil {
+		t.Fatalf("InsertJob() error: %v", err)
+	}
+	if _, err := stale.TransitionJob(ctx, killed.ID, []string{"queued"}, "running", ""); err != nil {
+		t.Fatalf("TransitionJob(queued→running) error: %v", err)
+	}
+	if err := stale.Close(); err != nil {
+		t.Fatalf("close the store: %v", err)
+	}
+
+	srv := fakeNLPService(t, "lexicon-hownet-v1")
+	got := invoke(t, h.args("--nlp-url", srv.URL)...)
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitOK, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "marked 1 interrupted job") {
+		t.Errorf("stderr does not report the recovery: %q", got.stderr)
+	}
+	if strings.Contains(got.stderr, "wxid") {
+		t.Errorf("stderr carries the conversation key: %q", got.stderr)
+	}
+
+	after := openDB(t, h.db)
+	var staleStatus string
+	if err := after.DB().QueryRowContext(ctx,
+		`SELECT status FROM analysis_jobs WHERE id = ?`, killed.ID).Scan(&staleStatus); err != nil {
+		t.Fatalf("read the interrupted job: %v", err)
+	}
+	if staleStatus != "interrupted" {
+		t.Errorf("the killed job's status = %q, want %q", staleStatus, "interrupted")
+	}
+	var freshStatus string
+	if err := after.DB().QueryRowContext(ctx,
+		`SELECT status FROM analysis_jobs WHERE kind = 'sentiment' AND id <> ?`, killed.ID).Scan(&freshStatus); err != nil {
+		t.Fatalf("read the job this run created: %v", err)
+	}
+	if freshStatus != "done" {
+		t.Errorf("this run's job status = %q, want %q", freshStatus, "done")
+	}
+}
+
 func TestDefaultDBPath_IsUnderLocalAppData(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", filepath.Join("C:", "Users", "test", "AppData", "Local"))
 	want := filepath.Join("C:", "Users", "test", "AppData", "Local", "lover-instance", "data.db")

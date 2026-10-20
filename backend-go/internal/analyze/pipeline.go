@@ -33,6 +33,21 @@ type Progress struct {
 // the writer connection free between blocks — the design forbids holding it
 // while an HTTP request is in flight.
 func RunSentiment(ctx context.Context, s *store.Store, c *nlp.Client, talker, modelVersion string, batchSize int) (Progress, error) {
+	return RunSentimentProgress(ctx, s, c, talker, modelVersion, batchSize, nil)
+}
+
+// RunSentimentProgress is RunSentiment with a hook that runs after each block
+// has been committed.
+//
+// onProgress receives the absolute counts, and it runs only after the block's
+// transaction returned successfully. Calling it first would advertise a
+// checkpoint that does not exist yet, and a job row promising progress the
+// database does not hold is exactly the half-finished state ADR-0002 exists to
+// prevent. It is called once per committed block, so a job watching it sees
+// steps rather than a figure that only appears at the end.
+//
+// A nil onProgress is allowed and is what RunSentiment passes.
+func RunSentimentProgress(ctx context.Context, s *store.Store, c *nlp.Client, talker, modelVersion string, batchSize int, onProgress func(scored, total int)) (Progress, error) {
 	if batchSize <= 0 || batchSize > nlp.MaxBatchSize {
 		return Progress{}, fmt.Errorf("analyze: batch size %d is outside 1..%d", batchSize, nlp.MaxBatchSize)
 	}
@@ -73,6 +88,9 @@ func RunSentiment(ctx context.Context, s *store.Store, c *nlp.Client, talker, mo
 			return progress, fmt.Errorf("analyze: %w", err)
 		}
 		progress.Scored += len(rows)
+		if onProgress != nil {
+			onProgress(progress.Scored, progress.Total)
+		}
 	}
 }
 
