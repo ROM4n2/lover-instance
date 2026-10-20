@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -75,6 +76,20 @@ CREATE TABLE IF NOT EXISTS word_freq (
   PRIMARY KEY(talker, period, is_self, word)
 );
 
+-- word_freq_v2 carries the model version the way sentiment and daily_stats do.
+-- The version is part of the identity of a count, not decoration: the counts
+-- are accumulated with "cnt = cnt + excluded.cnt", so a rescan under a second
+-- model version would add its tokens onto the first version's rows and double
+-- every word cloud figure. Keyed by version, each model accumulates its own.
+--
+-- The M1 table above is kept and never dropped or rewritten: it is read-only
+-- legacy, and the only copy of counts a migration could not attribute.
+CREATE TABLE IF NOT EXISTS word_freq_v2 (
+  talker TEXT NOT NULL, period TEXT NOT NULL, is_self INTEGER NOT NULL,
+  model_version TEXT NOT NULL, word TEXT NOT NULL, cnt INTEGER NOT NULL,
+  PRIMARY KEY(talker, period, is_self, model_version, word)
+);
+
 CREATE TABLE IF NOT EXISTS analysis_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   talker TEXT NOT NULL, kind TEXT NOT NULL,
@@ -103,16 +118,101 @@ var tables = []string{
 	"activity_heatmap",
 	"conversations",
 	"word_freq",
+	"word_freq_v2",
 	"analysis_jobs",
 	"ingest_state",
 }
 
-// Migrate creates every table and index. It is idempotent: running it twice
-// leaves the same schema and reports no error, so the CLI can call it
+// Migrate creates every table and index, then carries the legacy word counts
+// forward into word_freq_v2. It is idempotent: running it twice leaves the same
+// schema and the same row contents and reports no error, so the CLI can call it
 // unconditionally on startup.
+//
+// The schema and the copy run in one transaction so an interrupted upgrade
+// cannot leave v2 half-populated under a schema that says the work is done.
 func (s *Store) Migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migrate: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("migrate schema: %w", err)
 	}
+	if err := migrateWordFreqToV2(ctx, tx); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migrate: %w", err)
+	}
 	return nil
+}
+
+// migrateWordFreqToV2 copies the M1 word counts into the versioned table.
+//
+// The legacy table has no model_version column, so its rows can only be
+// attributed when the sentiment table names exactly one version: that is the
+// version whose scores produced those tokens. The copy is skipped when the
+// sentiment table holds no rows (nothing was ever scored, so there is no
+// version to name) and when it holds two or more distinct versions (the counts
+// cannot be split, and attributing them to one of the candidates would print a
+// word cloud for a model that never produced it — the very mislabelling this
+// table exists to prevent). An empty word_freq_v2 for those databases is the
+// honest outcome; the legacy table stays readable and untouched.
+//
+// Idempotence comes from the WHERE NOT EXISTS: Migrate runs on every startup,
+// and a row already carried over is not inserted again. Copying without it
+// would duplicate rows on the first rerun and, because the counts are meant to
+// be accumulated elsewhere, would be indistinguishable from the doubling this
+// migration removes.
+func migrateWordFreqToV2(ctx context.Context, tx *sql.Tx) error {
+	versions, err := distinctSentimentVersions(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if len(versions) != 1 {
+		return nil
+	}
+	version := versions[0]
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO word_freq_v2 (talker, period, is_self, model_version, word, cnt)
+SELECT f.talker, f.period, f.is_self, ?, f.word, f.cnt
+  FROM word_freq f
+ WHERE NOT EXISTS (
+       SELECT 1 FROM word_freq_v2 v
+        WHERE v.talker = f.talker AND v.period = f.period
+          AND v.is_self = f.is_self AND v.model_version = ? AND v.word = f.word
+      )
+`, version, version)
+	if err != nil {
+		return fmt.Errorf("copy word_freq into word_freq_v2: %w", err)
+	}
+	return nil
+}
+
+// distinctSentimentVersions lists the model versions the sentiment table
+// actually holds, which is what decides whether the legacy counts can be
+// attributed to one of them.
+func distinctSentimentVersions(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT model_version FROM sentiment`)
+	if err != nil {
+		return nil, fmt.Errorf("read sentiment model versions: %w", err)
+	}
+	defer rows.Close()
+
+	var versions []string
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return nil, fmt.Errorf("scan sentiment model version: %w", err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sentiment model versions: %w", err)
+	}
+	return versions, nil
 }

@@ -79,14 +79,14 @@ func TestSaveScoredBlock_AccumulatesTokenCounts(t *testing.T) {
 		t.Fatalf("second SaveScoredBlock() error: %v", err)
 	}
 
-	counts, err := s.WordFrequencies(ctx, "c", AllPeriod, true)
+	counts, err := s.WordFrequencies(ctx, "c", AllPeriod, true, testModelVersion)
 	if err != nil {
 		t.Fatalf("WordFrequencies() error: %v", err)
 	}
 	if counts["你好"] != 2 || counts["[捂脸]"] != 4 {
 		t.Errorf("counts = %v, want 你好:2 and [捂脸]:4 after two accumulations", counts)
 	}
-	partner, err := s.WordFrequencies(ctx, "c", AllPeriod, false)
+	partner, err := s.WordFrequencies(ctx, "c", AllPeriod, false, testModelVersion)
 	if err != nil {
 		t.Fatalf("WordFrequencies(partner) error: %v", err)
 	}

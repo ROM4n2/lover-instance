@@ -118,10 +118,10 @@ func (s *Store) SaveScoredBlock(ctx context.Context, talker, modelVersion, perio
 	if err := writeSentimentRows(ctx, tx, modelVersion, rows); err != nil {
 		return err
 	}
-	if err := addTokenCounts(ctx, tx, talker, period, true, selfTokens); err != nil {
+	if err := addTokenCounts(ctx, tx, talker, period, modelVersion, true, selfTokens); err != nil {
 		return err
 	}
-	if err := addTokenCounts(ctx, tx, talker, period, false, partnerTokens); err != nil {
+	if err := addTokenCounts(ctx, tx, talker, period, modelVersion, false, partnerTokens); err != nil {
 		return err
 	}
 
@@ -153,25 +153,32 @@ ON CONFLICT (msg_id, model_version) DO UPDATE SET
 	return nil
 }
 
-func addTokenCounts(ctx context.Context, tx *sql.Tx, talker, period string, isSelf bool, counts map[string]int) error {
+// addTokenCounts accumulates one side's tokens for one model version.
+//
+// model_version is part of the conflict target, not just a stored value: the
+// accumulation is unconditional on the row it lands in, so the version has to
+// be part of what identifies that row. Without it a rescan under a new version
+// would add its tokens onto the previous version's rows and every word cloud
+// figure would double.
+func addTokenCounts(ctx context.Context, tx *sql.Tx, talker, period, modelVersion string, isSelf bool, counts map[string]int) error {
 	if len(counts) == 0 {
 		return nil
 	}
 	statement, err := tx.PrepareContext(ctx, `
-INSERT INTO word_freq (talker, period, is_self, word, cnt)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (talker, period, is_self, word) DO UPDATE SET cnt = cnt + excluded.cnt
+INSERT INTO word_freq_v2 (talker, period, is_self, model_version, word, cnt)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (talker, period, is_self, model_version, word) DO UPDATE SET cnt = cnt + excluded.cnt
 `)
 	if err != nil {
-		return fmt.Errorf("prepare word_freq upsert: %w", err)
+		return fmt.Errorf("prepare word_freq_v2 upsert: %w", err)
 	}
 	defer statement.Close()
 	for word, count := range counts {
 		if count == 0 {
 			continue
 		}
-		if _, err := statement.ExecContext(ctx, talker, period, boolToInt(isSelf), word, count); err != nil {
-			return fmt.Errorf("accumulate word_freq for %q: %w", word, err)
+		if _, err := statement.ExecContext(ctx, talker, period, boolToInt(isSelf), modelVersion, word, count); err != nil {
+			return fmt.Errorf("accumulate word_freq_v2 for %q: %w", word, err)
 		}
 	}
 	return nil
@@ -318,11 +325,16 @@ SELECT
 	return positive, negative, neutral, nil
 }
 
-// WordFrequencies reads the accumulated token counts for one side.
-func (s *Store) WordFrequencies(ctx context.Context, talker, period string, isSelf bool) (map[string]int, error) {
+// WordFrequencies reads the accumulated token counts for one side of one model
+// version.
+//
+// The version is required rather than optional: a count belongs to the model
+// that produced its tokens, and a report that showed one version's word cloud
+// under another version's name would be wrong in a way no reader could see.
+func (s *Store) WordFrequencies(ctx context.Context, talker, period string, isSelf bool, modelVersion string) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT word, cnt FROM word_freq WHERE talker = ? AND period = ? AND is_self = ?`,
-		talker, period, boolToInt(isSelf))
+		`SELECT word, cnt FROM word_freq_v2 WHERE talker = ? AND period = ? AND is_self = ? AND model_version = ?`,
+		talker, period, boolToInt(isSelf), modelVersion)
 	if err != nil {
 		return nil, fmt.Errorf("read word frequencies: %w", err)
 	}

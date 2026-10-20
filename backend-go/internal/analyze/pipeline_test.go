@@ -119,11 +119,11 @@ func TestRunSentiment_ScoresEveryAnalyzableMessage(t *testing.T) {
 		t.Errorf("coverage = %+v, want {Scored:2 Total:2}", coverage)
 	}
 
-	self, err := s.WordFrequencies(ctx, "c", store.AllPeriod, true)
+	self, err := s.WordFrequencies(ctx, "c", store.AllPeriod, true, testModelVersion)
 	if err != nil {
 		t.Fatalf("WordFrequencies() error: %v", err)
 	}
-	partner, err := s.WordFrequencies(ctx, "c", store.AllPeriod, false)
+	partner, err := s.WordFrequencies(ctx, "c", store.AllPeriod, false, testModelVersion)
 	if err != nil {
 		t.Fatalf("WordFrequencies(partner) error: %v", err)
 	}
@@ -132,6 +132,48 @@ func TestRunSentiment_ScoresEveryAnalyzableMessage(t *testing.T) {
 	}
 	if self["你好"] != 1 || partner["你好"] != 1 {
 		t.Errorf("token split wrong: self=%v partner=%v", self, partner)
+	}
+}
+
+// TestRunSentiment_TwoVersionsKeepTheirOwnWordCounts is the end-to-end form of
+// the defect this migration exists to remove. D5: the word freq rows had no
+// model version and `addTokenCounts` added unconditionally, so rescanning the
+// same conversation under the next model version added every token a second
+// time and the word cloud doubled. Here both passes run over the same two
+// messages and each version must hold exactly its own counts.
+func TestRunSentiment_TwoVersionsKeepTheirOwnWordCounts(t *testing.T) {
+	const otherVersion = "onnx-erlangshen-v1"
+
+	ctx := context.Background()
+	s := newAnalyzeStore(t)
+	insertMessage(t, s, "t1", 0, true, store.AnalyzableMsgType, "你好")
+	insertMessage(t, s, "t2", 1000, true, store.AnalyzableMsgType, "在吗")
+
+	server := &scoreServer{}
+	srv := httptest.NewServer(server.handler())
+	defer srv.Close()
+	client := newClient(t, srv)
+
+	if _, err := RunSentiment(ctx, s, client, "c", testModelVersion, 2); err != nil {
+		t.Fatalf("RunSentiment(%s) error: %v", testModelVersion, err)
+	}
+	if _, err := RunSentiment(ctx, s, client, "c", otherVersion, 2); err != nil {
+		t.Fatalf("RunSentiment(%s) error: %v", otherVersion, err)
+	}
+
+	// Two self messages, each contributing 你好 and [捂脸] once.
+	first, err := s.WordFrequencies(ctx, "c", store.AllPeriod, true, testModelVersion)
+	if err != nil {
+		t.Fatalf("WordFrequencies(%s) error: %v", testModelVersion, err)
+	}
+	second, err := s.WordFrequencies(ctx, "c", store.AllPeriod, true, otherVersion)
+	if err != nil {
+		t.Fatalf("WordFrequencies(%s) error: %v", otherVersion, err)
+	}
+	for version, counts := range map[string]map[string]int{testModelVersion: first, otherVersion: second} {
+		if counts["你好"] != 2 || counts["[捂脸]"] != 2 {
+			t.Errorf("%s counts = %v, want 你好:2 [捂脸]:2 — the other version's rescan doubled them", version, counts)
+		}
 	}
 }
 
@@ -152,7 +194,7 @@ func TestRunSentiment_SecondRunDoesNoWork(t *testing.T) {
 	if _, err := RunSentiment(ctx, s, client, "c", testModelVersion, 1); err != nil {
 		t.Fatalf("first RunSentiment() error: %v", err)
 	}
-	before, _ := s.WordFrequencies(ctx, "c", store.AllPeriod, true)
+	before, _ := s.WordFrequencies(ctx, "c", store.AllPeriod, true, testModelVersion)
 	requestsAfterFirst := server.requests.Load()
 
 	progress, err := RunSentiment(ctx, s, client, "c", testModelVersion, 1)
@@ -165,7 +207,7 @@ func TestRunSentiment_SecondRunDoesNoWork(t *testing.T) {
 	if progress.Scored != 0 {
 		t.Errorf("second run Scored = %d, want 0", progress.Scored)
 	}
-	after, _ := s.WordFrequencies(ctx, "c", store.AllPeriod, true)
+	after, _ := s.WordFrequencies(ctx, "c", store.AllPeriod, true, testModelVersion)
 	if len(after) != len(before) {
 		t.Errorf("word_freq grew on a no-op rerun: before=%v after=%v", before, after)
 	}
@@ -208,7 +250,7 @@ func TestRunSentiment_KeepsTheCheckpointWhenALaterBlockFails(t *testing.T) {
 	if coverage.Scored != 2 {
 		t.Errorf("coverage.Scored = %d, want 2: the first block's scores must survive the failure", coverage.Scored)
 	}
-	self, err := s.WordFrequencies(ctx, "c", store.AllPeriod, true)
+	self, err := s.WordFrequencies(ctx, "c", store.AllPeriod, true, testModelVersion)
 	if err != nil {
 		t.Fatalf("WordFrequencies() error: %v", err)
 	}

@@ -52,11 +52,11 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
-	selfTokens, err := s.WordFrequencies(ctx, talker, store.AllPeriod, true)
+	selfTokens, err := s.WordFrequencies(ctx, talker, store.AllPeriod, true, sentimentModelVersion)
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
-	partnerTokens, err := s.WordFrequencies(ctx, talker, store.AllPeriod, false)
+	partnerTokens, err := s.WordFrequencies(ctx, talker, store.AllPeriod, false, sentimentModelVersion)
 	if err != nil {
 		return View{}, fmt.Errorf("report: %w", err)
 	}
