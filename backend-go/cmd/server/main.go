@@ -196,9 +196,17 @@ func execute(ctx context.Context, cfg options, stderr io.Writer) error {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	// The worker manager is built here rather than inside api.New so this
+	// command can stop it: an analysis run is a goroutine holding the one
+	// database connection, and the store is closed by the deferred call above.
+	// Leaving the workers to a process exit would close the database under
+	// them.
+	manager := api.NewJobManager(s, cfg.nlpURL)
+	defer manager.Shutdown()
+
 	server := &http.Server{
 		Addr:              cfg.addr,
-		Handler:           api.New(api.Options{Store: s, NLPURL: cfg.nlpURL, Version: version, Log: stderr}),
+		Handler:           api.New(api.Options{Store: s, NLPURL: cfg.nlpURL, Version: version, Log: stderr, Jobs: manager}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       idleTimeout,
 	}
