@@ -223,6 +223,56 @@ ON CONFLICT (talker, period, is_self, model_version, word) DO UPDATE SET cnt = c
 	return nil
 }
 
+// ResetScores deletes one model version's scores and word counts for one
+// conversation, and reports how many rows it removed.
+//
+// It exists for the explicit --rescore-words path and nothing else: history
+// scored before monthly periods existed only has the all-time word rows, so a
+// monthly view needs the tokens written again from scratch. Deleting is the
+// only way to re-accumulate them without doubling, and it is confined to the
+// named version: another version's rows and the messages themselves are not
+// touched. The version is required rather than optional — an empty value would
+// otherwise clear every version's work under the label of one rescan.
+func (s *Store) ResetScores(ctx context.Context, talker, modelVersion string) (int, error) {
+	if modelVersion == "" {
+		return 0, fmt.Errorf("reset scores: model version must not be empty")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin reset scores: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// sentiment has no talker column; the conversation filter goes through the
+	// messages it points at. Deleting by model_version alone would clear that
+	// version for every conversation in the database.
+	sentiment, err := tx.ExecContext(ctx, `
+DELETE FROM sentiment
+ WHERE model_version = ?
+   AND msg_id IN (SELECT id FROM messages WHERE talker = ?)
+`, modelVersion, talker)
+	if err != nil {
+		return 0, fmt.Errorf("delete sentiment rows: %w", err)
+	}
+	words, err := tx.ExecContext(ctx,
+		`DELETE FROM word_freq_v2 WHERE talker = ? AND model_version = ?`, talker, modelVersion)
+	if err != nil {
+		return 0, fmt.Errorf("delete word_freq_v2 rows: %w", err)
+	}
+	deletedSentiment, err := sentiment.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted sentiment rows: %w", err)
+	}
+	deletedWords, err := words.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted word rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit reset scores: %w", err)
+	}
+	return int(deletedSentiment + deletedWords), nil
+}
+
 // SentimentCoverage reports scored against analyzable.
 func (s *Store) SentimentCoverage(ctx context.Context, talker, modelVersion string) (Coverage, error) {
 	var coverage Coverage

@@ -1086,3 +1086,92 @@ func TestRun_TakesOverTheSlotWhenToldTheOtherRunIsDead(t *testing.T) {
 		t.Errorf("new job status = %q, want %q", newStatus, "done")
 	}
 }
+
+// insertUnreachableScore writes a score for the image message, which the
+// scoring pass never revisits (it is not analyzable). Its survival is therefore
+// an unambiguous sign of whether a delete happened: a rescan will not put it
+// back.
+func insertUnreachableScore(t *testing.T, path, modelVersion string) int64 {
+	t.Helper()
+	s := openDB(t, path)
+	defer func() { _ = s.Close() }()
+
+	var imageID int64
+	if err := s.DB().QueryRow(`SELECT id FROM messages WHERE msg_type = 3 LIMIT 1`).Scan(&imageID); err != nil {
+		t.Fatalf("find the image message: %v", err)
+	}
+	if _, err := s.DB().Exec(
+		`INSERT INTO sentiment (msg_id, model_version, polarity) VALUES (?, ?, ?)`,
+		imageID, modelVersion, 0.1); err != nil {
+		t.Fatalf("insert the unreachable score: %v", err)
+	}
+	return imageID
+}
+
+func countScores(t *testing.T, path string, msgID int64, modelVersion string) int {
+	t.Helper()
+	s := openDB(t, path)
+	defer func() { _ = s.Close() }()
+	var count int
+	if err := s.DB().QueryRow(
+		`SELECT COUNT(*) FROM sentiment WHERE msg_id = ? AND model_version = ?`,
+		msgID, modelVersion).Scan(&count); err != nil {
+		t.Fatalf("count the scores: %v", err)
+	}
+	return count
+}
+
+// TestRun_RescoreWordsDeletesBeforeRescanning is the explicit-rescan contract:
+// with the flag the version's old rows are cleared (so monthly data can be
+// rebuilt) and stderr says so; the report still comes out.
+func TestRun_RescoreWordsDeletesBeforeRescanning(t *testing.T) {
+	const version = "lexicon-hownet-v1"
+	h := newHarness(t)
+	srv := fakeNLPService(t, version)
+
+	if got := invoke(t, h.args("--nlp-url", srv.URL)...); got.code != exitOK {
+		t.Fatalf("first run failed: %s", got.stderr)
+	}
+	imageID := insertUnreachableScore(t, h.db, version)
+
+	got := invoke(t, h.args("--nlp-url", srv.URL, "--rescore-words")...)
+	if got.code != exitOK {
+		t.Fatalf("rescore run failed: %s", got.stderr)
+	}
+	if !strings.Contains(got.stderr, "已清空") {
+		t.Errorf("stderr does not announce the clear: %q", got.stderr)
+	}
+	if n := countScores(t, h.db, imageID, version); n != 0 {
+		t.Errorf("the unreachable score survived --rescore-words (%d rows), so nothing was deleted", n)
+	}
+}
+
+// TestRun_WithoutRescoreWordsDeletesNothing is the negative control: a normal
+// re-run must never remove data.
+func TestRun_WithoutRescoreWordsDeletesNothing(t *testing.T) {
+	const version = "lexicon-hownet-v1"
+	h := newHarness(t)
+	srv := fakeNLPService(t, version)
+
+	if got := invoke(t, h.args("--nlp-url", srv.URL)...); got.code != exitOK {
+		t.Fatalf("first run failed: %s", got.stderr)
+	}
+	imageID := insertUnreachableScore(t, h.db, version)
+
+	if got := invoke(t, h.args("--nlp-url", srv.URL)...); got.code != exitOK {
+		t.Fatalf("second run failed: %s", got.stderr)
+	}
+	if n := countScores(t, h.db, imageID, version); n != 1 {
+		t.Errorf("the score was deleted on a run without --rescore-words (%d rows), which must never happen", n)
+	}
+}
+
+// TestRun_RescoreWordsRequiresScoring keeps the flag from deleting rows a
+// --skip-sentiment run would never rebuild.
+func TestRun_RescoreWordsRequiresScoring(t *testing.T) {
+	h := newHarness(t)
+	got := invoke(t, h.args("--skip-sentiment", "--rescore-words")...)
+	if got.code != exitUsage {
+		t.Fatalf("exit code = %d, want %d: %s", got.code, exitUsage, got.stderr)
+	}
+}

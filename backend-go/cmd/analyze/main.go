@@ -30,6 +30,7 @@ import (
 	"lover-instance/backend-go/internal/analyze"
 	"lover-instance/backend-go/internal/ingest"
 	"lover-instance/backend-go/internal/jobs"
+	"lover-instance/backend-go/internal/narrative"
 	"lover-instance/backend-go/internal/nlp"
 	"lover-instance/backend-go/internal/report"
 	"lover-instance/backend-go/internal/store"
@@ -49,6 +50,20 @@ const (
 	exportJSONHint = "run the chatlog-keeper exporter first; this repository contains no code that reads the WeChat database"
 
 	defaultNLPURL = "http://127.0.0.1:8000"
+
+	// defaultOllamaURL is the loopback endpoint the narrator talks to. Only a
+	// loopback address is ever accepted (ADR-0004).
+	defaultOllamaURL = "http://127.0.0.1:11434"
+
+	// narrativePromptVersion must match narrative's own unexported
+	// promptVersion. It is duplicated here because this package cannot see it;
+	// the digest cache key mixes it in, so bumping one without the other would
+	// serve an old narration under a new prompt.
+	narrativePromptVersion = "1"
+
+	// narrativeTimeout bounds one model call. A zero timeout never expires, so
+	// this is deliberately positive rather than left to the client default.
+	narrativeTimeout = 120 * time.Second
 
 	// jobKindSentiment is the analysis_jobs.kind this command produces. It is
 	// one conversation's sentiment pass, which is the unit ADR-0002 calls a
@@ -107,6 +122,18 @@ type options struct {
 	// is empty for "whatever the service reports as its default", which is
 	// what every run did before the choice existed.
 	sentimentVersion string
+
+	// ollamaURL and ollamaModel configure the local narrator. The model has no
+	// default on purpose: guessing a model name would either fail late or, worse,
+	// narrate with whatever happened to be pulled. Empty means no narration.
+	ollamaURL   string
+	ollamaModel string
+	// noNarrative turns narration off even when a model is named.
+	noNarrative bool
+	// rescoreWords deletes this model version's scores and word rows before
+	// scoring again. It is the only path that removes data, and it exists
+	// because history written before monthly periods needs a clean rescan.
+	rescoreWords bool
 }
 
 // summary is the single line the command prints on success. It is machine
@@ -222,6 +249,10 @@ Flags:
 	fs.BoolVar(&cfg.skipSentiment, "skip-sentiment", false, "rebuild behavioral metrics only; the report will show sentiment coverage as incomplete")
 	fs.BoolVar(&cfg.takeOver, "take-over", false, "interrupt whatever job holds this conversation and start anyway; only correct when you know that run is dead — a live one would mean two scorers and doubled word counts")
 	fs.BoolVar(&cfg.listTalkers, "list-talkers", false, "print the conversation keys already stored, one per line, and exit")
+	fs.StringVar(&cfg.ollamaURL, "ollama-url", defaultOllamaURL, "base URL of the local OpenAI-compatible model; only a loopback address is accepted")
+	fs.StringVar(&cfg.ollamaModel, "ollama-model", "", "local model name used to write the narration; empty means no narration")
+	fs.BoolVar(&cfg.noNarrative, "no-narrative", false, "skip the narration section even when --ollama-model is set")
+	fs.BoolVar(&cfg.rescoreWords, "rescore-words", false, "delete this model version's scores and word counts for this conversation before scoring, so monthly words are rebuilt; without it nothing is deleted")
 
 	if err := fs.Parse(args); err != nil {
 		return options{}, flagParseError{err: err}
@@ -237,6 +268,11 @@ Flags:
 	}
 	if cfg.outPath == "" {
 		return options{}, usagef("--out must name a file")
+	}
+	// Rescanning words is a scoring action: with scoring skipped there would be
+	// nothing to rebuild, and deleting the old rows first would only lose them.
+	if cfg.rescoreWords && cfg.skipSentiment {
+		return options{}, usagef("--rescore-words needs the sentiment pass, so it cannot be combined with --skip-sentiment")
 	}
 	return cfg, nil
 }
@@ -328,7 +364,7 @@ func execute(ctx context.Context, cfg options, stderr io.Writer) (outcome, error
 	sentimentMs := time.Since(at).Milliseconds()
 
 	at = time.Now()
-	written, err := writeReport(ctx, s, cfg, talker, sentimentModel)
+	written, err := writeReport(ctx, s, cfg, talker, sentimentModel, buildNarrator(cfg, stderr))
 	if err != nil {
 		return outcome{}, err
 	}
@@ -538,6 +574,18 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		job = taken
 	}
 
+	// The slot is ours here, so it is safe to remove this version's old rows.
+	// Doing it before Start would delete data for a rescore that then refused
+	// to run because another process owns the slot. Only this flag reaches the
+	// delete path; without it nothing is removed.
+	if cfg.rescoreWords {
+		removed, err := s.ResetScores(ctx, talker, version)
+		if err != nil {
+			return "", 0, err
+		}
+		fmt.Fprintf(stderr, "analyze: 已清空 %s 的分数，正在重扫（删除 %d 行）\n", version, removed)
+	}
+
 	// The beat and the per-block callback write the same row from two goroutines,
 	// so the outcome is kept behind a mutex: run under -race with a plain field
 	// and this is a data race, and the run's reported failure would be whichever
@@ -669,8 +717,8 @@ func recordJobProgress(ctx context.Context, s *store.Store, jobID int64, talker,
 // writeReport renders the report next to its final name and renames it into
 // place, so an interrupted write never leaves a truncated file that looks like
 // a finished report.
-func writeReport(ctx context.Context, s *store.Store, cfg options, talker, sentimentModel string) (int, error) {
-	view, err := report.Collect(ctx, s, talker, store.BehaviorModelVersion, sentimentModel)
+func writeReport(ctx context.Context, s *store.Store, cfg options, talker, sentimentModel string, narrator report.Narrator) (int, error) {
+	view, err := report.Collect(ctx, s, talker, store.BehaviorModelVersion, sentimentModel, narrator)
 	if err != nil {
 		return 0, err
 	}
@@ -692,4 +740,63 @@ func writeReport(ctx context.Context, s *store.Store, cfg options, talker, senti
 		return 0, fmt.Errorf("move report into place: %w", err)
 	}
 	return buffer.Len(), nil
+}
+
+// buildNarrator wires the local provider and its on-disk cache, or returns nil
+// when narration is off or no model was named.
+//
+// A configuration the provider refuses (a non-loopback URL, say) is reported on
+// stderr but does not stop the report: the narrator returned then fails with
+// that reason, and the section says so. The alternative — exiting — would make
+// a missing model name or a wrong URL the difference between a report and no
+// report, which the M4 plan rules out.
+func buildNarrator(cfg options, stderr io.Writer) report.Narrator {
+	if cfg.noNarrative || cfg.ollamaModel == "" {
+		return nil
+	}
+	provider, err := narrative.NewOllama(cfg.ollamaURL, cfg.ollamaModel, narrativeTimeout)
+	if err != nil {
+		fmt.Fprintf(stderr, "analyze: narration is unavailable: %v\n", err)
+		return failingNarrator{err: err}
+	}
+	return localNarrator{
+		cached: narrative.Cached(provider, narrativeCacheDir()),
+		model:  cfg.ollamaModel,
+	}
+}
+
+// localNarrator turns an aggregate Input into a cache key and a prompt, then
+// asks the cached provider for the paragraph. It is the adapter between the
+// report's Narrator seam and the narrative package's Provider/CachedProvider
+// shapes.
+type localNarrator struct {
+	cached narrative.CachedProvider
+	model  string
+}
+
+func (n localNarrator) Narrate(ctx context.Context, in narrative.Input) (string, error) {
+	digest := in.Digest(n.model, narrativePromptVersion)
+	return n.cached.Generate(ctx, digest, narrative.RenderPrompt(in))
+}
+
+// failingNarrator stands in when the provider could not be built, so the report
+// still says why the section is empty instead of claiming none was configured.
+type failingNarrator struct{ err error }
+
+func (f failingNarrator) Narrate(context.Context, narrative.Input) (string, error) {
+	return "", f.err
+}
+
+// narrativeCacheDir is where narrations are remembered. It sits beside the
+// database under LOCALAPPDATA, which is not synced by default, because a cached
+// paragraph describes the conversation.
+func narrativeCacheDir() string {
+	if root := os.Getenv("LOCALAPPDATA"); root != "" {
+		return filepath.Join(root, "lover-instance", "narrative")
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return filepath.Join(".", "lover-instance-narrative")
+	}
+	return filepath.Join(dir, "lover-instance", "narrative")
 }
