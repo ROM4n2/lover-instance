@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +102,10 @@ type options struct {
 	nlpURL        string
 	skipSentiment bool
 	listTalkers   bool
+	// sentimentVersion is which of the service's models scores this run. It
+	// is empty for "whatever the service reports as its default", which is
+	// what every run did before the choice existed.
+	sentimentVersion string
 }
 
 // summary is the single line the command prints on success. It is machine
@@ -212,6 +217,7 @@ Flags:
 	fs.StringVar(&cfg.dbPath, "db", defaultDBPath(), "path to the SQLite database")
 	fs.StringVar(&cfg.outPath, "out", "report.html", "path of the HTML report to write")
 	fs.StringVar(&cfg.nlpURL, "nlp-url", defaultNLPURL, "base URL of the NLP service")
+	fs.StringVar(&cfg.sentimentVersion, "sentiment-version", "", "sentiment model version to score with; empty uses the default version the service reports on /health, and the choices are the versions listed there in available_versions")
 	fs.BoolVar(&cfg.skipSentiment, "skip-sentiment", false, "rebuild behavioral metrics only; the report will show sentiment coverage as incomplete")
 	fs.BoolVar(&cfg.listTalkers, "list-talkers", false, "print the conversation keys already stored, one per line, and exit")
 
@@ -448,7 +454,8 @@ func keepFresh(ctx context.Context, every time.Duration, beat func(context.Conte
 	}
 }
 
-// scoreSentiment asks the service which lexicon it holds, scores the
+// scoreSentiment asks the service which versions it can score with, picks one
+// (the version the run asked for, or the service's default), scores the
 // conversation with it, and rolls the polarity into the daily table.
 //
 // The run is recorded in analysis_jobs, because this is the minute-scale stage:
@@ -465,8 +472,25 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 	if err != nil {
 		return "", 0, fmt.Errorf("the NLP service at %s is not answering (%w); start it, or run with --skip-sentiment to build a behavioral-only report", cfg.nlpURL, err)
 	}
-	if health.ModelVersion == "" {
+
+	// The version this run scores with, and the version every score is recorded
+	// under. An explicit --sentiment-version wins; otherwise the service's own
+	// default, which is what every run used before the choice existed. Either
+	// way the result is refused rather than guessed at when it is empty: a
+	// report must name the model that produced it.
+	version := cfg.sentimentVersion
+	if version == "" {
+		version = health.ModelVersion
+	}
+	if version == "" {
 		return "", 0, fmt.Errorf("the NLP service at %s reports status %q with no lexicon version; a report must name the model that produced it, so this run is refused until the service is ready", cfg.nlpURL, health.Status)
+	}
+	// Checked before the slot is taken and before the first block: a version the
+	// service does not offer would otherwise come back as a 400 somewhere in the
+	// middle of a long pass, and leave a job row explaining a pass that could
+	// never have worked.
+	if err := checkRequestedVersion(cfg.sentimentVersion, health.AvailableVersions); err != nil {
+		return "", 0, err
 	}
 
 	// Before the slot is asked for: a killed run left its job in 'running', and
@@ -482,7 +506,7 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		fmt.Fprintf(stderr, "analyze: marked %d interrupted job(s) from a previous run\n", interrupted)
 	}
 
-	job, created, err := jobs.Start(ctx, s, talker, jobKindSentiment, health.ModelVersion)
+	job, created, err := jobs.Start(ctx, s, talker, jobKindSentiment, version)
 	if err != nil {
 		return "", 0, err
 	}
@@ -524,14 +548,14 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		return heartbeatErr
 	}
 	beat := func(ctx context.Context) error {
-		return recordJobProgress(ctx, s, job.ID, talker, health.ModelVersion)
+		return recordJobProgress(ctx, s, job.ID, talker, version)
 	}
 	stopHeartbeat := keepFresh(ctx, heartbeatInterval, beat, noteHeartbeat)
 	defer stopHeartbeat()
 
-	progress, runErr := analyze.RunSentimentProgress(ctx, s, client, talker, health.ModelVersion, nlp.MaxBatchSize,
+	progress, runErr := analyze.RunSentimentProgress(ctx, s, client, talker, version, nlp.MaxBatchSize,
 		func(_ int, _ int) {
-			noteHeartbeat(recordJobProgress(ctx, s, job.ID, talker, health.ModelVersion))
+			noteHeartbeat(recordJobProgress(ctx, s, job.ID, talker, version))
 		})
 	// Before anything that closes the run, and it waits for the goroutine: the
 	// closing write and a beat landing at the same moment are two writers on one
@@ -544,7 +568,7 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		runErr = heartbeatFailure()
 	}
 	if runErr == nil {
-		runErr = s.RebuildSentimentMetrics(ctx, talker, health.ModelVersion)
+		runErr = s.RebuildSentimentMetrics(ctx, talker, version)
 	}
 	if runErr == nil {
 		// The last write is the authoritative one. A run over a conversation
@@ -553,7 +577,7 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		// run that never started. Coverage is also what a resumed run needs:
 		// the per-block numbers count this run's messages, not the
 		// conversation's.
-		runErr = recordJobProgress(ctx, s, job.ID, talker, health.ModelVersion)
+		runErr = recordJobProgress(ctx, s, job.ID, talker, version)
 	}
 
 	// The job's outcome is derived from the same error the command reports, so
@@ -580,14 +604,36 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 	defer cancelFinish()
 	if finishErr := jobs.Finish(finishCtx, s, job.ID, status, message); finishErr != nil {
 		if runErr != nil {
-			return health.ModelVersion, progress.Scored, fmt.Errorf("%w (and the job could not be closed: %v)", runErr, finishErr)
+			return version, progress.Scored, fmt.Errorf("%w (and the job could not be closed: %v)", runErr, finishErr)
 		}
-		return health.ModelVersion, progress.Scored, finishErr
+		return version, progress.Scored, finishErr
 	}
 	if runErr != nil {
-		return health.ModelVersion, progress.Scored, runErr
+		return version, progress.Scored, runErr
 	}
-	return health.ModelVersion, progress.Scored, nil
+	return version, progress.Scored, nil
+}
+
+// checkRequestedVersion refuses a sentiment version the service does not
+// advertise, and names what it does offer so the fix is a copy-paste rather
+// than a documentation hunt.
+//
+// Two cases deliberately pass:
+//   - nothing was requested, so the run uses the service's own default, which
+//     is available by definition;
+//   - the service advertises no menu at all (one older than version selection),
+//     which carries no information to check against. The requested version is
+//     still sent, and the service's own refusal is what reports a wrong one.
+func checkRequestedVersion(requested string, available []string) error {
+	if requested == "" || len(available) == 0 {
+		return nil
+	}
+	for _, offered := range available {
+		if offered == requested {
+			return nil
+		}
+	}
+	return fmt.Errorf("the NLP service does not offer sentiment version %q; it scores with %s — re-run with one of those, or omit --sentiment-version to use the service's default", requested, strings.Join(available, ", "))
 }
 
 // recordJobProgress writes how much of the conversation is scored, not how much

@@ -63,6 +63,10 @@ type Health struct {
 	// caller records it as the provenance of every score, so it is taken from
 	// the service rather than assumed. It is empty while the lexicon loads.
 	ModelVersion string
+	// AvailableVersions is the menu the service can score with. The caller
+	// validates a requested version against it rather than letting a typo
+	// become a 400 halfway through a long run.
+	AvailableVersions []string
 }
 
 // Client is an HTTP client for the NLP service.
@@ -144,6 +148,10 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 		Status       string `json:"status"`
 		ModelLoaded  bool   `json:"model_loaded"`
 		ModelVersion string `json:"model_version"`
+		// A service that predates version selection omits this field entirely.
+		// Its absence is not an error: the caller degrades to no whitelist
+		// rather than refusing to score against a service that still works.
+		AvailableVersions []string `json:"available_versions"`
 	}
 	if err := c.call(ctx, http.MethodGet, "/health", nil, &payload); err != nil {
 		return Health{}, err
@@ -153,7 +161,18 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 	default:
 		return Health{}, fmt.Errorf("nlp: service reported an unrecognized status %q", payload.Status)
 	}
-	return Health{Status: payload.Status, ModelLoaded: payload.ModelLoaded, ModelVersion: payload.ModelVersion}, nil
+	// An absent field decodes to a nil slice; normalizing it keeps "no menu"
+	// a length-zero list at every call site instead of a special case.
+	available := payload.AvailableVersions
+	if available == nil {
+		available = []string{}
+	}
+	return Health{
+		Status:            payload.Status,
+		ModelLoaded:       payload.ModelLoaded,
+		ModelVersion:      payload.ModelVersion,
+		AvailableVersions: available,
+	}, nil
 }
 
 // call performs the request, retrying only what is safe to retry.

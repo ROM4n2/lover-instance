@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -353,5 +354,48 @@ func TestHealth_RejectsAnUnrecognizedStatus(t *testing.T) {
 
 	if _, err := newTestClient(t, srv).Health(context.Background()); err == nil {
 		t.Error("Health() = nil error for an unrecognized status, want an error")
+	}
+}
+
+// TestHealth_ReportsTheMenuItCanScoreWith. The caller validates a requested
+// version against this menu, so a typo becomes a refused run up front instead
+// of a 400 discovered halfway through a long pass.
+func TestHealth_ReportsTheMenuItCanScoreWith(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ready", "model_loaded": false, "model_version": "lexicon-hownet-v1",
+			"available_versions": []string{"lexicon-hownet-v1", "erlangshen-110m-v1"},
+		})
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv).Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health() error: %v", err)
+	}
+	want := []string{"lexicon-hownet-v1", "erlangshen-110m-v1"}
+	if !reflect.DeepEqual(got.AvailableVersions, want) {
+		t.Errorf("AvailableVersions = %v, want %v", got.AvailableVersions, want)
+	}
+}
+
+// TestHealth_ToleratesAServiceThatAdvertisesNoVersions is the forward
+// compatibility case: a service that predates version selection omits the
+// field altogether, and reading its health must not fail over an absent menu
+// — the caller degrades to no whitelist rather than refusing every run.
+func TestHealth_ToleratesAServiceThatAdvertisesNoVersions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ready", "model_loaded": false, "model_version": "lexicon-hownet-v1",
+		})
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv).Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health() error: %v", err)
+	}
+	if len(got.AvailableVersions) != 0 {
+		t.Errorf("AvailableVersions = %v, want an empty menu when the service advertises none", got.AvailableVersions)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -328,16 +329,54 @@ func echoScore(w http.ResponseWriter, r *http.Request) {
 // standing up a second kind of service.
 func fakeNLPServiceWithScore(t *testing.T, modelVersion string, score http.HandlerFunc) *httptest.Server {
 	t.Helper()
+	return fakeNLPServiceWithVersions(t, modelVersion, nil, score)
+}
+
+// fakeNLPServiceWithVersions advertises the menu a versioned service reports in
+// available_versions. A nil menu leaves the field out entirely, which is the
+// older service the client has to keep working against.
+func fakeNLPServiceWithVersions(t *testing.T, modelVersion string, available []string, score http.HandlerFunc) *httptest.Server {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		health := map[string]any{
 			"status": "ready", "model_loaded": false, "model_version": modelVersion,
-		})
+		}
+		if available != nil {
+			health["available_versions"] = available
+		}
+		_ = json.NewEncoder(w).Encode(health)
 	})
 	mux.HandleFunc("/score", score)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// versionProbe fails the test if any block is scored with a version other than
+// want, then hands the request on. The body is rebuilt because a handler reads
+// it once.
+func versionProbe(t *testing.T, want string, inner http.HandlerFunc) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read the score request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		var request struct {
+			ModelVersion string `json:"model_version"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode the score request: %v", err)
+		}
+		if request.ModelVersion != want {
+			t.Errorf("a block was scored with model_version = %q, want %q", request.ModelVersion, want)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		inner(w, r)
+	}
 }
 
 // TestRun_ScoresThroughTheServiceAndRecordsItsVersion is the end-to-end path:
@@ -368,6 +407,106 @@ func TestRun_ScoresThroughTheServiceAndRecordsItsVersion(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "lexicon-hownet-v1") {
 		t.Error("the report does not name the model that scored it")
+	}
+}
+
+// TestRun_ScoresWithTheVersionTheRunAskedFor is the reason the flag exists: a
+// run that can only ever use the service default can never put two versions on
+// one export, so the report's comparison section would stay empty forever.
+func TestRun_ScoresWithTheVersionTheRunAskedFor(t *testing.T) {
+	const asked = "erlangshen-110m-v1"
+	h := newHarness(t)
+	srv := fakeNLPServiceWithVersions(t, "lexicon-hownet-v1",
+		[]string{"lexicon-hownet-v1", asked},
+		versionProbe(t, asked, echoScore))
+
+	got := invoke(t, h.args("--nlp-url", srv.URL, "--sentiment-version", asked)...)
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitOK, got.stderr)
+	}
+	var parsed summary
+	if err := json.Unmarshal([]byte(strings.TrimSpace(got.stdout)), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.SentimentModel != asked {
+		t.Errorf("sentiment_model = %q, want %q: the run, not the service default, chose the version", parsed.SentimentModel, asked)
+	}
+	if parsed.Scored != 4 || parsed.Coverage != 4 {
+		t.Errorf("Scored/Coverage = %d/%d, want 4/4: the messages were unscored for this version", parsed.Scored, parsed.Coverage)
+	}
+
+	// The job row carries the same provenance, because a resumed run reads it.
+	var recorded string
+	if err := openDB(t, h.db).DB().QueryRowContext(context.Background(),
+		`SELECT model_version FROM analysis_jobs WHERE kind = 'sentiment' ORDER BY id DESC LIMIT 1`).Scan(&recorded); err != nil {
+		t.Fatalf("read the job row: %v", err)
+	}
+	if recorded != asked {
+		t.Errorf("job model_version = %q, want %q", recorded, asked)
+	}
+}
+
+// TestRun_RefusesAVersionTheServiceDoesNotOffer. A typo has to cost a refused
+// run, not a 400 discovered halfway through a long pass, and it must leave no
+// job row behind claiming a pass started.
+func TestRun_RefusesAVersionTheServiceDoesNotOffer(t *testing.T) {
+	const unknown = "distilbert-typo-v0"
+	h := newHarness(t)
+	var blocks atomic.Int64
+	srv := fakeNLPServiceWithVersions(t, "lexicon-hownet-v1",
+		[]string{"lexicon-hownet-v1", "erlangshen-110m-v1"},
+		func(w http.ResponseWriter, r *http.Request) {
+			blocks.Add(1)
+			echoScore(w, r)
+		})
+
+	got := invoke(t, h.args("--nlp-url", srv.URL, "--sentiment-version", unknown)...)
+	if got.code != exitFailure {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitFailure, got.stderr)
+	}
+	if n := blocks.Load(); n != 0 {
+		t.Errorf("the service was asked to score %d block(s), want 0: an unknown version is refused before the first block", n)
+	}
+	if !strings.Contains(got.stderr, unknown) {
+		t.Errorf("stderr does not name the version that was asked for: %q", got.stderr)
+	}
+	if !strings.Contains(got.stderr, "erlangshen-110m-v1") {
+		t.Errorf("stderr does not list what the service offers: %q", got.stderr)
+	}
+	if strings.Contains(got.stderr, "wxid") {
+		t.Errorf("stderr carries the conversation key: %q", got.stderr)
+	}
+	if _, err := os.Stat(h.out); !os.IsNotExist(err) {
+		t.Error("a report was written for a run that was refused")
+	}
+	var rows int
+	if err := openDB(t, h.db).DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM analysis_jobs`).Scan(&rows); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("analysis_jobs holds %d rows, want 0: the refusal happens before the job is created", rows)
+	}
+}
+
+// TestRun_UsesTheServiceDefaultWhenNoVersionIsAskedFor is the regression: the
+// new flag must not change what a plain run does.
+func TestRun_UsesTheServiceDefaultWhenNoVersionIsAskedFor(t *testing.T) {
+	h := newHarness(t)
+	srv := fakeNLPServiceWithVersions(t, "lexicon-hownet-v1",
+		[]string{"lexicon-hownet-v1", "erlangshen-110m-v1"},
+		versionProbe(t, "lexicon-hownet-v1", echoScore))
+
+	got := invoke(t, h.args("--nlp-url", srv.URL)...)
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitOK, got.stderr)
+	}
+	var parsed summary
+	if err := json.Unmarshal([]byte(strings.TrimSpace(got.stdout)), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.SentimentModel != "lexicon-hownet-v1" {
+		t.Errorf("sentiment_model = %q, want the version /health reports as the default", parsed.SentimentModel)
 	}
 }
 
