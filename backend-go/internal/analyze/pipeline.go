@@ -6,6 +6,7 @@ package analyze
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"lover-instance/backend-go/internal/nlp"
@@ -84,7 +85,8 @@ func RunSentimentProgress(ctx context.Context, s *store.Store, c *nlp.Client, ta
 				Intensity: result.Intensity,
 			})
 		}
-		if err := s.SaveScoredBlock(ctx, talker, modelVersion, store.AllPeriod, rows, selfTokens, partnerTokens); err != nil {
+		monthly := splitTokensByMonth(pending, results)
+		if err := s.SaveScoredBlock(ctx, talker, modelVersion, store.AllPeriod, rows, selfTokens, partnerTokens, monthly); err != nil {
 			return progress, fmt.Errorf("analyze: %w", err)
 		}
 		progress.Scored += len(rows)
@@ -127,9 +129,59 @@ func splitTokens(pending []store.PendingMsg, results []nlp.Result) (self, partne
 		if pending[i].IsSelf {
 			target = self
 		}
-		for _, token := range result.Tokens {
-			target[token]++
-		}
+		addTokens(target, result.Tokens)
 	}
 	return self, partner
+}
+
+// splitTokensByMonth re-buckets the same block's tokens by message month.
+//
+// This cannot be derived from splitTokens: a block of up to nlp.MaxBatchSize
+// messages can straddle the first of the month, and the block-level maps have
+// already merged a 23:50 message with a 00:10 one. Filing the whole block under
+// either month would put one month's words into the wrong chart, so the split
+// has to happen per message, here, while each message's timestamp is still
+// known. The month itself comes from store.MonthOf so the CST boundary is the
+// same one the daily and hourly buckets use.
+//
+// The result is ordered by month so the write is deterministic; months with no
+// tokens produce no entry.
+func splitTokensByMonth(pending []store.PendingMsg, results []nlp.Result) []store.MonthTokens {
+	byMonth := make(map[string]*store.MonthTokens)
+	order := make([]string, 0, 2)
+	for i, result := range results {
+		if i >= len(pending) {
+			break
+		}
+		month := store.MonthOf(pending[i].TsMs)
+		bucket, seen := byMonth[month]
+		if !seen {
+			bucket = &store.MonthTokens{
+				Month:   month,
+				Self:    make(map[string]int),
+				Partner: make(map[string]int),
+			}
+			byMonth[month] = bucket
+			order = append(order, month)
+		}
+		target := bucket.Partner
+		if pending[i].IsSelf {
+			target = bucket.Self
+		}
+		addTokens(target, result.Tokens)
+	}
+	sort.Strings(order)
+	monthly := make([]store.MonthTokens, 0, len(order))
+	for _, month := range order {
+		monthly = append(monthly, *byMonth[month])
+	}
+	return monthly
+}
+
+// addTokens counts one message's tokens into a target map. Shared so the
+// all-time and per-month splits cannot drift apart in how they count.
+func addTokens(target map[string]int, tokens []string) {
+	for _, token := range tokens {
+		target[token]++
+	}
 }

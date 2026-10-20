@@ -16,8 +16,9 @@ import (
 // conversation was out of scope.
 const AnalyzableMsgType = 1
 
-// AllPeriod is the word_freq period covering the whole conversation. Monthly
-// periods arrive with the topic-over-time chart in M4.
+// AllPeriod is the word_freq period covering the whole conversation. The other
+// periods are months in CST ("2026-08"), written alongside it by the same
+// scoring block; see MonthTokens.
 const AllPeriod = "all"
 
 // SentimentRow is one message's score. The store owns this shape so it does
@@ -30,11 +31,18 @@ type SentimentRow struct {
 }
 
 // PendingMsg is a message still waiting to be scored.
+//
+// TsMs is carried because the monthly word-freq rows are keyed on the month of
+// each message, and a block of messages can straddle a month boundary: the
+// block-level token map has already lost which token came from which month by
+// the time the scores come back, so the per-message timestamp has to travel
+// with the message.
 type PendingMsg struct {
 	ID      int64
 	Content string
 	IsSelf  bool
 	MsgType int
+	TsMs    int64
 }
 
 // Coverage reports how much of a conversation has been scored, so a report can
@@ -56,7 +64,7 @@ func (s *Store) PendingMessages(ctx context.Context, talker, modelVersion string
 		return nil, fmt.Errorf("pending messages: limit must be positive, got %d", limit)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT m.id, COALESCE(m.content, ''), m.is_self, m.msg_type
+SELECT m.id, COALESCE(m.content, ''), m.is_self, m.msg_type, m.ts
   FROM messages m
  WHERE m.talker = ?
    AND m.msg_type = ?
@@ -76,7 +84,7 @@ SELECT m.id, COALESCE(m.content, ''), m.is_self, m.msg_type
 	for rows.Next() {
 		var msg PendingMsg
 		var isSelf int
-		if err := rows.Scan(&msg.ID, &msg.Content, &isSelf, &msg.MsgType); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.Content, &isSelf, &msg.MsgType, &msg.TsMs); err != nil {
 			return nil, fmt.Errorf("scan pending message: %w", err)
 		}
 		msg.IsSelf = isSelf == 1
@@ -100,6 +108,18 @@ func (s *Store) CountAnalyzable(ctx context.Context, talker string) (int, error)
 	return count, nil
 }
 
+// MonthTokens is one month's tokens for one block, split by who sent them.
+//
+// It exists because the block-level token maps cannot be filed under a month:
+// one block of 256 messages can straddle midnight on the 1st, so its counts
+// belong to two months and there is no way to split them after the fact. The
+// caller therefore re-buckets per message, and hands the result here.
+type MonthTokens struct {
+	Month   string
+	Self    map[string]int
+	Partner map[string]int
+}
+
 // SaveScoredBlock records one batch's outcome: the per-message scores and the
 // token counts they contributed.
 //
@@ -108,7 +128,12 @@ func (s *Store) CountAnalyzable(ctx context.Context, talker string) (int, error)
 // anti-join must be the only thing deciding which batches contribute — if a
 // batch were written twice the counts would double. One transaction makes that
 // atomic, and the anti-join makes it happen at most once.
-func (s *Store) SaveScoredBlock(ctx context.Context, talker, modelVersion, period string, rows []SentimentRow, selfTokens, partnerTokens map[string]int) error {
+//
+// monthly holds the same block's tokens re-split by message month. The all-time
+// rows come from period as before; each monthly entry writes its own YYYY-MM
+// period in the same transaction, so a report can never read a month that is
+// only half of what the all-time row already counts.
+func (s *Store) SaveScoredBlock(ctx context.Context, talker, modelVersion, period string, rows []SentimentRow, selfTokens, partnerTokens map[string]int, monthly []MonthTokens) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin scored block: %w", err)
@@ -123,6 +148,20 @@ func (s *Store) SaveScoredBlock(ctx context.Context, talker, modelVersion, perio
 	}
 	if err := addTokenCounts(ctx, tx, talker, period, modelVersion, false, partnerTokens); err != nil {
 		return err
+	}
+	for _, bucket := range monthly {
+		// An empty month would file the counts under a period no reader asks
+		// for; skipping it keeps a caller bug from creating a junk period
+		// rather than hiding real tokens.
+		if bucket.Month == "" {
+			continue
+		}
+		if err := addTokenCounts(ctx, tx, talker, bucket.Month, modelVersion, true, bucket.Self); err != nil {
+			return err
+		}
+		if err := addTokenCounts(ctx, tx, talker, bucket.Month, modelVersion, false, bucket.Partner); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

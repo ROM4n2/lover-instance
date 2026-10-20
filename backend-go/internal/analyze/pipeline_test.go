@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"lover-instance/backend-go/internal/nlp"
 	"lover-instance/backend-go/internal/store"
@@ -90,6 +91,99 @@ func newClient(t *testing.T, srv *httptest.Server) *nlp.Client {
 		t.Fatalf("nlp.NewClient() error: %v", err)
 	}
 	return c
+}
+
+// insertMessageAt stores one message at an explicit timestamp, for tests that
+// care which month a message lands in.
+func insertMessageAt(t *testing.T, s *store.Store, key string, tsMs int64, isSelf bool, content string) {
+	t.Helper()
+	_, err := s.DB().Exec(`
+INSERT INTO messages (source, source_msg_id, ts, talker, sender, is_self, msg_type, sub_type, content, content_sha1)
+VALUES ('chatlog-keeper', ?, ?, 'c', 'wxid_sender', ?, ?, 0, ?, 'hash')`,
+		key, tsMs, isSelf, store.AnalyzableMsgType, content)
+	if err != nil {
+		t.Fatalf("insert message %s: %v", key, err)
+	}
+}
+
+// echoServer stands in for the NLP service and returns each message's content
+// as its only token, so a test can see which message contributed which word.
+func echoServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ModelVersion string `json:"model_version"`
+			Items        []struct {
+				MsgID   int64  `json:"msg_id"`
+				Content string `json:"content"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		results := make([]map[string]any, 0, len(request.Items))
+		for _, item := range request.Items {
+			results = append(results, map[string]any{
+				"msg_id": item.MsgID, "polarity": 0.1, "emotion": "乐",
+				"intensity": 0.1, "tokens": []string{item.Content},
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model_version": request.ModelVersion, "results": results,
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRunSentiment_SplitsABlockAcrossMonths is the reason the monthly counts are
+// re-bucketed per message instead of per block: 2026-08-31 23:50 and
+// 2026-09-01 00:10 CST are in one block (a block is up to nlp.MaxBatchSize
+// messages, and month ends have plenty of traffic), yet they belong to two
+// months. Filing the block's merged token map under either month would put one
+// month's words in the other month's chart; filing it under both would invent a
+// September conversation that never happened.
+func TestRunSentiment_SplitsABlockAcrossMonths(t *testing.T) {
+	ctx := context.Background()
+	s := newAnalyzeStore(t)
+	beijing := time.FixedZone("CST", 8*60*60)
+	insertMessageAt(t, s, "aug", time.Date(2026, time.August, 31, 23, 50, 0, 0, beijing).UnixMilli(), true, "八月的话")
+	insertMessageAt(t, s, "sep", time.Date(2026, time.September, 1, 0, 10, 0, 0, beijing).UnixMilli(), true, "九月的话")
+
+	srv := echoServer(t)
+	// One block holding both messages: exactly the case a block-level split
+	// would get wrong.
+	if _, err := RunSentiment(ctx, s, newClient(t, srv), "c", testModelVersion, 2); err != nil {
+		t.Fatalf("RunSentiment() error: %v", err)
+	}
+
+	months, err := s.MonthlyWordFrequencies(ctx, "c", testModelVersion, true, 10)
+	if err != nil {
+		t.Fatalf("MonthlyWordFrequencies() error: %v", err)
+	}
+	if len(months) != 2 {
+		t.Fatalf("months = %+v, want 2026-08 and 2026-09", months)
+	}
+	if months[0].Month != "2026-08" || months[1].Month != "2026-09" {
+		t.Fatalf("month order = %q, %q, want ascending 2026-08, 2026-09", months[0].Month, months[1].Month)
+	}
+	if len(months[0].Words) != 1 || months[0].Words[0].Word != "八月的话" {
+		t.Errorf("2026-08 words = %+v, want only 八月的话: the 23:50 message is August's", months[0].Words)
+	}
+	if len(months[1].Words) != 1 || months[1].Words[0].Word != "九月的话" {
+		t.Errorf("2026-09 words = %+v, want only 九月的话: the 00:10 message is September's", months[1].Words)
+	}
+
+	// And the all-time row still holds both, so the monthly rows augment it
+	// rather than replacing it.
+	all, err := s.WordFrequencies(ctx, "c", store.AllPeriod, true, testModelVersion)
+	if err != nil {
+		t.Fatalf("WordFrequencies(all) error: %v", err)
+	}
+	if all["八月的话"] != 1 || all["九月的话"] != 1 {
+		t.Errorf("all counts = %v, want both messages counted", all)
+	}
 }
 
 func TestRunSentiment_ScoresEveryAnalyzableMessage(t *testing.T) {

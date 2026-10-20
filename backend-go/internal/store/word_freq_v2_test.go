@@ -24,11 +24,11 @@ func TestSaveScoredBlock_KeysWordFreqByModelVersion(t *testing.T) {
 
 	block := []SentimentRow{{MsgID: 1, Polarity: 0.4, Emotion: "乐", Intensity: 0.3}}
 	self := map[string]int{"你好": 1, "[捂脸]": 2}
-	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, block, self, nil); err != nil {
+	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, block, self, nil, nil); err != nil {
 		t.Fatalf("SaveScoredBlock(%s) error: %v", testModelVersion, err)
 	}
 	// The same batch, rescanned under the next model version.
-	if err := s.SaveScoredBlock(ctx, "c", otherModelVersion, AllPeriod, block, self, nil); err != nil {
+	if err := s.SaveScoredBlock(ctx, "c", otherModelVersion, AllPeriod, block, self, nil, nil); err != nil {
 		t.Fatalf("SaveScoredBlock(%s) error: %v", otherModelVersion, err)
 	}
 
@@ -66,7 +66,7 @@ func TestWordFrequencies_ReturnsNothingForAVersionThatNeverRan(t *testing.T) {
 	s := migratedStore(t)
 	put(t, s, "k1", at(2026, time.August, 16, 12, 0, 0), true, "你好")
 	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod,
-		[]SentimentRow{{MsgID: 1, Polarity: 0.4}}, map[string]int{"你好": 1}, nil); err != nil {
+		[]SentimentRow{{MsgID: 1, Polarity: 0.4}}, map[string]int{"你好": 1}, nil, nil); err != nil {
 		t.Fatalf("SaveScoredBlock() error: %v", err)
 	}
 

@@ -32,7 +32,7 @@ func seedSecondVersion(t *testing.T, s *store.Store) {
 	}
 	self := map[string]int{"今天": 1, "开心": 1}
 	partner := map[string]int{"开心": 1, "难过": 1}
-	if err := s.SaveScoredBlock(context.Background(), testTalker, secondVersion, store.AllPeriod, rows, self, partner); err != nil {
+	if err := s.SaveScoredBlock(context.Background(), testTalker, secondVersion, store.AllPeriod, rows, self, partner, nil); err != nil {
 		t.Fatalf("SaveScoredBlock(%s) error: %v", secondVersion, err)
 	}
 }

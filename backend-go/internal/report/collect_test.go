@@ -70,7 +70,7 @@ VALUES ('chatlog-keeper','img',?, ?, 'wxid_peer', 0, 3, 0, '', 'h')`, base+240_0
 	}
 	self := map[string]int{"今天": 1, "特别": 1, "开心": 1, "[捂脸]": 2, "难过": 1}
 	partner := map[string]int{"开心": 1, "难过": 1, "[旺柴]": 3}
-	if err := s.SaveScoredBlock(ctx, testTalker, testModelVersion, store.AllPeriod, rows, self, partner); err != nil {
+	if err := s.SaveScoredBlock(ctx, testTalker, testModelVersion, store.AllPeriod, rows, self, partner, nil); err != nil {
 		t.Fatalf("SaveScoredBlock() error: %v", err)
 	}
 	if err := s.RebuildBehaviorMetrics(ctx, testTalker); err != nil {

@@ -44,7 +44,7 @@ func TestPendingMessages_SkipsNonTextAndAlreadyScored(t *testing.T) {
 	}
 
 	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod,
-		[]SentimentRow{{MsgID: pending[0].ID, Polarity: 0.5, Emotion: "乐", Intensity: 0.4}}, nil, nil); err != nil {
+		[]SentimentRow{{MsgID: pending[0].ID, Polarity: 0.5, Emotion: "乐", Intensity: 0.4}}, nil, nil, nil); err != nil {
 		t.Fatalf("SaveScoredBlock() error: %v", err)
 	}
 	after, err := s.PendingMessages(ctx, "c", testModelVersion, 10)
@@ -72,10 +72,10 @@ func TestSaveScoredBlock_AccumulatesTokenCounts(t *testing.T) {
 
 	block := []SentimentRow{{MsgID: 1, Polarity: 0.2, Emotion: "好", Intensity: 0.3}}
 	self := map[string]int{"你好": 1, "[捂脸]": 2}
-	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, block, self, nil); err != nil {
+	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, block, self, nil, nil); err != nil {
 		t.Fatalf("first SaveScoredBlock() error: %v", err)
 	}
-	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, block, self, nil); err != nil {
+	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, block, self, nil, nil); err != nil {
 		t.Fatalf("second SaveScoredBlock() error: %v", err)
 	}
 
@@ -95,6 +95,70 @@ func TestSaveScoredBlock_AccumulatesTokenCounts(t *testing.T) {
 	}
 }
 
+// TestSaveScoredBlock_AccumulatesMonthlyCounts pins the monthly rows to the
+// same accumulation contract as the all-time row: two different blocks of the
+// same month written once each must add up, and the month must agree with the
+// all-time total rather than being a second, independent count.
+//
+// Accumulation also means a repeated write would double the month exactly as it
+// doubles `all` — that is the contract, and the anti-join is what keeps it from
+// happening. What this test pins is the ordinary case: distinct blocks, correct
+// sums.
+func TestSaveScoredBlock_AccumulatesMonthlyCounts(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	put(t, s, "k1", at(2026, time.August, 16, 12, 0, 0), true, "你好")
+	put(t, s, "k2", at(2026, time.August, 16, 12, 1, 0), true, "你好")
+
+	first := []SentimentRow{{MsgID: 1, Polarity: 0.2, Emotion: "好"}}
+	second := []SentimentRow{{MsgID: 2, Polarity: 0.3, Emotion: "好"}}
+	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, first,
+		map[string]int{"你好": 1}, nil,
+		[]MonthTokens{{Month: "2026-08", Self: map[string]int{"你好": 1}}}); err != nil {
+		t.Fatalf("first SaveScoredBlock() error: %v", err)
+	}
+	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, second,
+		map[string]int{"你好": 2}, nil,
+		[]MonthTokens{{Month: "2026-08", Self: map[string]int{"你好": 2}}}); err != nil {
+		t.Fatalf("second SaveScoredBlock() error: %v", err)
+	}
+
+	all, err := s.WordFrequencies(ctx, "c", AllPeriod, true, testModelVersion)
+	if err != nil {
+		t.Fatalf("WordFrequencies(all) error: %v", err)
+	}
+	if all["你好"] != 3 {
+		t.Errorf("all counts = %v, want 你好:3 after two blocks", all)
+	}
+
+	var monthly int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT cnt FROM word_freq_v2 WHERE talker='c' AND period='2026-08' AND is_self=1 AND word='你好' AND model_version=?`,
+		testModelVersion).Scan(&monthly); err != nil {
+		t.Fatalf("read monthly count: %v", err)
+	}
+	if monthly != 3 {
+		t.Errorf("2026-08 count = %d, want 3: two blocks of the same month must add up like the all-time row", monthly)
+	}
+
+	// A bucket with no month must not create a junk period: it would be a
+	// month no reader can ask for, holding tokens nobody can see.
+	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod,
+		[]SentimentRow{{MsgID: 1, Polarity: 0.2}},
+		map[string]int{"你好": 1}, nil,
+		[]MonthTokens{{Month: "", Self: map[string]int{"孤儿": 9}}}); err != nil {
+		t.Fatalf("SaveScoredBlock() with an empty month error: %v", err)
+	}
+	var junk int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM word_freq_v2 WHERE talker='c' AND period=''`).Scan(&junk); err != nil {
+		t.Fatalf("count empty-period rows: %v", err)
+	}
+	if junk != 0 {
+		t.Errorf("word_freq_v2 holds %d rows with an empty period, want 0", junk)
+	}
+}
+
 func TestSentimentCoverage_ReportsScoredAgainstAnalyzable(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -105,7 +169,7 @@ func TestSentimentCoverage_ReportsScoredAgainstAnalyzable(t *testing.T) {
 	putTyped(t, s, "img", base+3000, false, 3, "")
 
 	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod,
-		[]SentimentRow{{MsgID: 1, Polarity: 0.1, Emotion: "好"}}, nil, nil); err != nil {
+		[]SentimentRow{{MsgID: 1, Polarity: 0.1, Emotion: "好"}}, nil, nil, nil); err != nil {
 		t.Fatalf("SaveScoredBlock() error: %v", err)
 	}
 	coverage, err := s.SentimentCoverage(ctx, "c", testModelVersion)
@@ -151,7 +215,7 @@ func TestRebuildSentimentMetrics_WritesItsOwnVersionRow(t *testing.T) {
 	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, []SentimentRow{
 		{MsgID: 1, Polarity: 0.8, Emotion: "乐", Intensity: 0.6},
 		{MsgID: 2, Polarity: -0.7, Emotion: "哀", Intensity: 0.5},
-	}, nil, nil); err != nil {
+	}, nil, nil, nil); err != nil {
 		t.Fatalf("SaveScoredBlock() error: %v", err)
 	}
 	if err := s.RebuildBehaviorMetrics(ctx, "c"); err != nil {
@@ -198,7 +262,7 @@ func TestRebuildSentimentMetrics_IsIdempotent(t *testing.T) {
 	s := migratedStore(t)
 	put(t, s, "k1", at(2026, time.August, 16, 12, 0, 0), true, "happy")
 	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod,
-		[]SentimentRow{{MsgID: 1, Polarity: 0.8, Emotion: "乐"}}, nil, nil); err != nil {
+		[]SentimentRow{{MsgID: 1, Polarity: 0.8, Emotion: "乐"}}, nil, nil, nil); err != nil {
 		t.Fatalf("SaveScoredBlock() error: %v", err)
 	}
 	for i := 0; i < 2; i++ {
@@ -223,7 +287,7 @@ func TestEmotionDistribution_CountsPerLabel(t *testing.T) {
 	put(t, s, "k3", at(2026, time.August, 16, 12, 2, 0), true, "c")
 	if err := s.SaveScoredBlock(ctx, "c", testModelVersion, AllPeriod, []SentimentRow{
 		{MsgID: 1, Emotion: "乐"}, {MsgID: 2, Emotion: "哀"}, {MsgID: 3, Emotion: "乐"},
-	}, nil, nil); err != nil {
+	}, nil, nil, nil); err != nil {
 		t.Fatalf("SaveScoredBlock() error: %v", err)
 	}
 	distribution, err := s.EmotionDistribution(ctx, "c", testModelVersion)

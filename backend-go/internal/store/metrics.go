@@ -23,6 +23,17 @@ const BehaviorModelVersion = "behavior-v1"
 // evening ones.
 var cst = time.FixedZone("CST", 8*60*60)
 
+// MonthOf names the CST month a timestamp falls in, as the YYYY-MM period the
+// monthly word-freq rows use.
+//
+// It lives here, next to cst, so there is one definition of the boundary: the
+// monthly word counts and the daily and hourly buckets must agree about which
+// month a late-night message belongs to, and a second `time.FixedZone` or a
+// second format string elsewhere would be a second chance to disagree.
+func MonthOf(tsMs int64) string {
+	return time.UnixMilli(tsMs).In(cst).Format("2006-01")
+}
+
 // conversationGapMs is how long a silence has to be before the next message is
 // treated as opening a new conversation rather than continuing one.
 const conversationGapMs int64 = 5 * 60 * 1000
