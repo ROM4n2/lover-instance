@@ -63,6 +63,15 @@ bin/
 *.exe~
 vendor/
 
+# Windows 上 `go build -o analyze ./cmd/analyze` 产出的是**无扩展名**文件，
+# 上面的 *.exe 匹配不到它。两条锚定路径，不要图省事写成裸 `analyze` / `server`：
+# 无斜线的模式会在任意层级生效，会把 backend-go/cmd/server/ 整个源码目录一起
+# 忽略掉——新增文件从此不出现在 git status 里，那比漏ignore两个二进制糟得多。
+/analyze
+/server
+/backend-go/analyze
+/backend-go/server
+
 # === IDE / OS ===
 .idea/
 .vscode/
