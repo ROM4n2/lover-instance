@@ -225,10 +225,21 @@
 - 首次迁移需幂等：`INSERT ... SELECT ... WHERE NOT EXISTS`。
 
 **TDD**
-- [ ] 红：两个版本各写一次同一批消息 → 两行且各自 cnt 正确；同版本重复写 → cnt 不翻倍
-- [ ] 绿：实现
-- [ ] 变异：去掉 model_version 条件，确认「不翻倍」测试变红
-- [ ] 提交 `feat(store): key word frequencies by model version`
+- [x] 红：两个版本各写一次同一批消息 → 两行且各自 cnt 正确；同版本重复写 → cnt 不翻倍（**第②半句不可实现，见下方偏离 D4-1**）
+- [x] 绿：实现
+- [x] 变异：去掉 model_version 条件，确认「不翻倍」测试变红
+- [x] 提交 `feat(store): key word frequencies by model version`（`e6993a8`）
+
+#### Task 4 执行期偏离（2026-10-20 回填，以代码为准）
+
+| 计划原文 | 实际实现 | 原因 |
+| --- | --- | --- |
+| 「同版本重复写 → cnt 不翻倍」作为 store 层断言 | **store 层不实现该断言**；守卫放在调用点：`TestRunSentiment_SecondRunDoesNoWork`（第二轮 0 请求、计数不变） | store 层没有「块身份」列，无法区分「同一块被重写」与「下一块正常累加」；`cnt = cnt + excluded.cnt` 是**有意保留**的累加契约（续跑靠它）。真正的去重靠 `PendingMessages` 反连接 |
+| Files 只列 `migrations.go` / `sentiment_rows.go` / `analyze/pipeline.go` | 还改了 `report/collect.go` 与其测试；`pipeline.go` **未改** | `WordFrequencies` 签名变更必然波及报告层；`pipeline.go` 早已把 `modelVersion` 传进 `SaveScoredBlock` |
+| 「迁移时按默认版本复制一次」 | 迁移**只在 `sentiment` 去重后恰好 1 个 `model_version` 时**复制；0 个或 ≥2 个都不复制 | 把词频归给一个没有产出它的版本，正是本任务要消灭的错误。代价是极端情况下 v2 为空 → 词云静默空白，**可见性提示留给 Task 7**（不得静默） |
+| `Migrate` 每次裸 `Exec` | `Migrate` 改为**单事务**（建表 + 复制） | 升级中断不得留下「表说做完了、数据只搬了一半」的状态 |
+
+真实数据回归（2026-10-20，真实库 32,624 条 / 22,093 条已打分）：迁移前 `word_freq` 17,869 行 / 88,049 计数 → 迁移后 `word_freq_v2` **同样 17,869 行 / 88,049 计数**、旧表原样未动；报告 `sha256 a1ae683d…` 与迁移前**逐字节相同**；二次运行后计数不变（幂等）。
 
 ---
 
