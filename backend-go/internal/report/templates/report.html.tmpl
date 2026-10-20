@@ -389,17 +389,11 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
       bandLow.push(Number((p.Mean - p.StdDev).toFixed(4)));
       bandSpan.push(Number((2 * p.StdDev).toFixed(4)));
     });
-    // Adaptive y axis, but symmetric around zero and never narrower than
-    // ±0.2. A fixed [-1, 1] would flatten a real 0.065 span into a straight
-    // line (read as "nothing happened"); a pure autoscale would blow the same
-    // noise up into dramatic swings.
-    var lo = 0, hi = 0;
-    points.forEach(function (p) {
-      if (!p.Drawable) { return; }
-      lo = Math.min(lo, p.Mean - p.StdDev);
-      hi = Math.max(hi, p.Mean + p.StdDev);
-    });
-    var span = Math.max(hi, -lo, 0.2);
+    // The half-height comes from the server. ECharts prints its min and max
+    // labels verbatim, so a fitted bound like -0.3796374984823631 appeared on
+    // screen as a full float clipped to "823631" beside the plot; the server
+    // rounds it to two decimals and keeps it at least ±0.2 wide.
+    var span = Number((D.Trend || {}).Axis) || 0.2;
     return {
       grid: { left: 52, right: 18, top: 16, bottom: 56 },
       legend: { bottom: 4, data: [TREND_MEAN, TREND_SD, TREND_THIN] },
@@ -415,7 +409,12 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
         }
       },
       xAxis: { type: 'category', data: days, axisLabel: { hideOverlap: true } },
-      yAxis: { type: 'value', min: -span, max: span },
+      yAxis: {
+        type: 'value', min: -span, max: span,
+        // Two decimals regardless of the tick ECharts picks: the axis is a
+        // reading aid, not a place for a sixteen-digit float.
+        axisLabel: { formatter: function (v) { return Number(v).toFixed(2); } }
+      },
       series: [
         {
           name: '', type: 'line', stack: 'sd', data: bandLow, connectNulls: false,

@@ -245,6 +245,32 @@ const testVersionForRender = secondVersion
 // TestRender_ComparisonSectionFollowsPresence is the disclosure guard: with a
 // single version there is nothing to compare and the word must not appear at
 // all; with two, the disagreement rate must.
+// TestTrendView_AxisIsReadableAndCoversTheBand pins the axis bound the chart is
+// handed. ECharts prints min and max labels verbatim: passing it a raw float
+// produced an axis whose top label was -0.3796374984823631, clipped by the plot
+// edge into "823631". Two decimals also has to still contain the ±1 SD band, or
+// the edge of the band is cut off and reads as "no spread".
+func TestTrendView_AxisIsReadableAndCoversTheBand(t *testing.T) {
+	points := []store.TrendPoint{
+		{Day: "2026-08-15", Mean: 0.3796374984823631, StdDev: 0.0001, Count: 10},
+		{Day: "2026-08-16", Mean: -0.17361629107389676, StdDev: 0.01, Count: 5},
+	}
+	view := trendView(points)
+	if view.Axis != 0.38 {
+		t.Errorf("Axis = %v, want 0.38: the bound is rounded up to two decimals", view.Axis)
+	}
+	for _, point := range points {
+		if math.Abs(point.Mean)+point.StdDev > view.Axis {
+			t.Errorf("Axis = %v does not cover %v ± %v, so the band would be cut off", view.Axis, point.Mean, point.StdDev)
+		}
+	}
+
+	narrow := trendView([]store.TrendPoint{{Day: "2026-08-15", Mean: 0.01, StdDev: 0.02, Count: 9}})
+	if narrow.Axis != 0.2 {
+		t.Errorf("Axis = %v, want the 0.2 floor: a fitted axis would magnify noise into drama", narrow.Axis)
+	}
+}
+
 func TestRender_ComparisonSectionFollowsPresence(t *testing.T) {
 	single := renderedView(t)
 	if strings.Contains(single, "不一致") {

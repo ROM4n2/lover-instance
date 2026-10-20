@@ -399,6 +399,7 @@ func splitOfVersion(ctx context.Context, s *store.Store, talker, version string)
 // the curve that was drawn. They stay zero when nothing is drawable.
 func trendView(points []store.TrendPoint) TrendView {
 	view := TrendView{Points: make([]TrendPointView, 0, len(points))}
+	reach := 0.0
 	for _, point := range points {
 		drawable := point.Drawable()
 		view.Points = append(view.Points, TrendPointView{
@@ -418,7 +419,11 @@ func trendView(points []store.TrendPoint) TrendView {
 			view.MeanLow = math.Min(view.MeanLow, point.Mean)
 			view.MeanHigh = math.Max(view.MeanHigh, point.Mean)
 		}
+		// The band, not just the line, has to fit: a ±1 SD edge below -axis
+		// would be cut off at the plot border and read as "no spread".
+		reach = math.Max(reach, math.Abs(point.Mean)+point.StdDev)
 		view.Drawable++
 	}
+	view.Axis = math.Ceil(math.Max(reach, minAxisSpan)*100) / 100
 	return view
 }

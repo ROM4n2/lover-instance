@@ -107,13 +107,27 @@ type TrendPointView struct {
 // leave a reader unable to tell "no messages" from "too few to draw". MeanLow
 // and MeanHigh bound the drawable points only, and are zero when there are
 // none — a range over points that were not drawn would describe nothing.
+//
+// Axis is half the height of the y range, rounded up to a readable two
+// decimals and never below minAxisSpan. It is computed here rather than in the
+// chart code because ECharts prints its min and max labels verbatim: handing it
+// -0.3796374984823631 as a bound produced an axis whose top label was the full
+// float, clipped by the canvas edge into "823631". A number a reader cannot
+// hold is not a label.
 type TrendView struct {
 	Points   []TrendPointView
 	Drawable int
 	Thin     int
 	MeanLow  float64
 	MeanHigh float64
+	Axis     float64
 }
+
+// minAxisSpan is the narrowest half-height the trend axis may take. Real
+// conversations sit in a band about 0.07 wide, so a purely fitted axis would
+// magnify noise into drama; a fixed [-1, 1] would flatten the same band into a
+// straight line. ±0.2 caps the magnification at roughly five.
+const minAxisSpan = 0.2
 
 // CoverageView states how much of the conversation the sentiment pass covered.
 type CoverageView struct {
