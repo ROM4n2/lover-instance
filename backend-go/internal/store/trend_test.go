@@ -7,9 +7,12 @@ import (
 	"time"
 )
 
-// trendDayMs places a message at 20:00 CST on the given August 2026 day: noon
-// UTC, four hours of margin on either side of the CST day boundary, so a
-// bucketing mistake in either direction lands on a different day.
+// trendDayMs places a message at 20:00 CST on the given August 2026 day.
+//
+// 12:00 UTC and 20:00 CST are the same calendar day, so this helper is
+// deliberately blind to timezone mistakes: every assertion built on it passes
+// under either bucketing. Timezone correctness is pinned separately, by putting
+// a message on a day where UTC and UTC+8 disagree.
 func trendDayMs(day int) int64 {
 	return at(2026, time.August, day, 12, 0, 0)
 }
@@ -311,6 +314,48 @@ func TestTrend_IgnoresScoresWithoutAPolarity(t *testing.T) {
 		t.Errorf("point = %+v, want 1 sample with mean 0.4 (the NULL polarity is not a sample)", points[0])
 	}
 }
+
+// TestTrend_OmitsADayWhoseScoresAreAllNull pins the other half of the NULL
+// rule: a score with no number is not a sample, so a day where every score is
+// NULL is a day with no measurements — not a day that measured zero. The
+// query filters before it groups, which is what makes this hold for a whole
+// day and not just for one row inside it.
+func TestTrend_OmitsADayWhoseScoresAreAllNull(t *testing.T) {
+	s := migratedStore(t)
+	putTyped(t, s, "unscored", trendDayMs(3), true, AnalyzableMsgType, "unscored")
+	scoreMessage(t, s, messageID(t, s, "unscored"), testModelVersion, nil)
+
+	points, err := s.Trend(context.Background(), "c", testModelVersion)
+	if err != nil {
+		t.Fatalf("Trend() error: %v", err)
+	}
+	if len(points) != 0 {
+		t.Errorf("points = %v, want none: a day with no numeric score measured nothing, it did not measure neutral", points)
+	}
+}
+
+// TestTrend_CountsEveryScoredMessageRegardlessOfType records a deliberate
+// choice: Trend reads the same scored rows the daily rollup does, so it does not
+// re-apply the analyzable-type filter that PendingMessages uses. In practice
+// the sentiment pass only scores type 1, so the two agree; a score parked on
+// another type is counted here. Changing one without the other would make the
+// curve and the daily table disagree, which is the failure this test exists to
+// prevent.
+func TestTrend_CountsEveryScoredMessageRegardlessOfType(t *testing.T) {
+	s := migratedStore(t)
+	putTyped(t, s, "notice", trendDayMs(3), true, 10000, "a system notice")
+	scoreMessage(t, s, messageID(t, s, "notice"), testModelVersion, ptrFloat(0.5))
+
+	points, err := s.Trend(context.Background(), "c", testModelVersion)
+	if err != nil {
+		t.Fatalf("Trend() error: %v", err)
+	}
+	if len(points) != 1 || points[0].Count != 1 {
+		t.Fatalf("points = %v, want one point with one sample: Trend shares the daily rollup's row set", points)
+	}
+}
+
+func ptrFloat(value float64) *float64 { return &value }
 
 func TestTrend_EmptyStoreReturnsNoPoints(t *testing.T) {
 	points, err := migratedStore(t).Trend(context.Background(), "c", testModelVersion)
