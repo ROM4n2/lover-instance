@@ -48,6 +48,10 @@ type Options struct {
 	// out instead of leaving goroutines writing to a database it is closing.
 	Jobs *JobManager
 
+	// ExportsDir is where POST /api/export writes. Empty means the location the
+	// design fixes, under LOCALAPPDATA.
+	ExportsDir string
+
 	// manager is the job manager the handlers actually use: Jobs when it was
 	// given, otherwise the one New built. It is resolved once, in New, so no
 	// handler has to ask twice and no handler can disagree with another.
@@ -99,6 +103,7 @@ func New(opts Options) *gin.Engine {
 	apiGroup.POST("/jobs", jobsCreateHandler(opts))
 	apiGroup.GET("/jobs/:id", jobStatusHandler(opts))
 	apiGroup.DELETE("/jobs/:id", jobCancelHandler(opts))
+	apiGroup.POST("/export", exportHandler(opts))
 	return r
 }
 
