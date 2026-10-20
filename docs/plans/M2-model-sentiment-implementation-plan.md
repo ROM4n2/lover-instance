@@ -134,8 +134,10 @@
 **当前状态（2026-10-20）**：
 - ✅ 脚手架 `workmem/eval/bakeoff.py` 已可跑：一次跑三个打分器、扫 τ、输出 accuracy / macro-F1 / 反向错误 / 分标签准确率。
 - ✅ 79 句起步集 `workmem/eval/eval_set.jsonl`（作者手写，pos/neg/neu 27/26/26），结果已回填到上文 [实测] 段。
-- ⬜ **待用户**：用自己的导出抽样标注 ≥150 句替换/扩充起步集。**在此之前，本 Task 的结论只能算「量级已明」而非「选型已定」**。
-- ⬜ 待定：是否把混合策略（词典弃权处交给模型）纳入评估——当前数据显示这是唯一可能同时拿到词典的中性判断与模型的情绪识别的方向。
+- ✅ **174 句真实导出抽样集已生成**（`workmem/eval/eval_set_user.jsonl`，分层抽样 + 固定种子，覆盖 7 个 tag；slang 有 6 条不可补的缺口）。跑法 `python workmem/eval/bakeoff_user.py`，结论在 `workmem/eval/BAKEOFF.md`：**词典 acc 0.638 / macro-F1 0.624 仍胜过 Erlangshen-110M τ=0.45（0.603/0.594）与 distilbert（0.471/0.450）**。
+- ⚠️ **这 174 条的标签是 AI 草拟（`label_source=agent-draft`），不是用户真值**。它把结论从"量级"推进到"同一读法下词典仍赢"，但**不足以宣称选型已定**。
+- ⬜ **待用户**：抽查 ≥30 条并改标（或自标 ≥150 条）后重跑，才算 Task 0 毕业。
+- ⬜ 待定：是否把混合策略（词典弃权处交给模型）纳入评估——新数据进一步支持它：distilbert 在 affection 27/30（词典 12/30）、Erlangshen 在 slang 16/24（词典 8/24），而两者都在 logistics/question 上输给词典。
 
 ---
 
@@ -159,10 +161,19 @@
 - 张量名从 `session.get_inputs()` 读，**不硬编码** `token_type_ids`（不同导出可能没有）。
 
 **TDD**
-- [ ] 红：测试断言 `predict([]) == []`、空串返回中性、返回条数与输入一致、labels 顺序取自 config
-- [ ] 绿：最小实现
-- [ ] 变异：把 `apply_neutral_band` 的边界改成 `<=`，确认边界测试变红
-- [ ] 提交 `feat(nlp): wrap onnx sentiment inference behind a model-agnostic encoder`
+- [x] 红：测试断言 `predict([]) == []`、空串返回中性、返回条数与输入一致、labels 顺序取自 config
+- [x] 绿：最小实现
+- [x] 变异：把 `apply_neutral_band` 的边界改成 `<=`，确认边界测试变红
+- [x] 提交 `feat(nlp): wrap onnx sentiment inference behind a model-agnostic encoder`（`d2e3d45`，17 条测试，`pytest` 38→55）
+
+#### Task 1 执行期偏离（2026-10-20 回填，以代码为准）
+
+| 计划原文 | 实际实现 | 原因 |
+| --- | --- | --- |
+| `Encoder(model_path, tokenizer_path, max_length=128, labels=...)` | `Encoder(session, tokenizer, labels, max_length=128)`；从目录构造走类方法 `from_model_dir(directory, model_file)` | 注入式让测试用假 session/tokenizer，**不依赖 100MB 权重**也能测 padding、张量名、空文本路径。计划的签名同样可实现（monkeypatch 即可），所以这是**设计改进而非被迫偏离** |
+| `apply_neutral_band(probs: list[float], tau, positive_index)` | `probs: list[list[float]]` | 计划原文自相矛盾：扁平的 `list[float]` 配 `positive_index` 无法定位正类列 |
+| 未规定 padding 实现 | **不使用** `tokenizer.enable_padding`，在 numpy 里按**本批**最大长度 pad | `workmem/eval/bakeoff.py:61` 的 `enable_padding(length=...)` 是**持久状态**，照抄会跨批次泄漏宽度（已用变异钉住） |
+| 未规定 y 轴 | `positive_index` 越界抛 `IndexError`（响亮），但**负下标会静默回绕**成"极性反转" | 已知弱点，无现存调用点；**Task 3 接线时必须显式校验 `0 <= positive_index < n`** |
 
 ---
 
@@ -184,10 +195,20 @@
 - 下载走 `urllib.request` + 超时；**禁止零值超时**。
 
 **TDD**
-- [ ] 红：用本地临时目录 + 假的 http 层，测试 ① 命中缓存零请求 ② sha 不匹配报错且清理 ③ 首次下载写全
-- [ ] 绿：实现
-- [ ] 变异：去掉 sha 校验，确认 ② 变红
-- [ ] 提交 `feat(nlp): fetch and verify onnx models with a pinned hash`
+- [x] 红：用本地临时目录 + 假的 http 层，测试 ① 命中缓存零请求 ② sha 不匹配报错且清理 ③ 首次下载写全
+- [x] 绿：实现
+- [x] 变异：去掉 sha 校验，确认 ② 变红
+- [x] 提交 `feat(nlp): fetch and verify onnx models with a pinned hash`（`c1a4712`，15 条测试，`pytest` 55→70）
+
+#### Task 2 执行期偏离（2026-10-20 回填，以代码为准）
+
+| 计划原文 | 实际实现 | 原因 |
+| --- | --- | --- |
+| `requirements.txt` 只加 `onnxruntime`、`tokenizers` | 另加 `numpy` | `onnx_encoder.py` 顶层直接 `import numpy`，只靠传递依赖会和 onnxruntime 的版本策略绑死 |
+| 「sha 不匹配即删除并报错（不得留半个模型）」 | 单文件场景完全满足；**多文件场景下，已校验通过的前序文件会留在目录里**（`ensure_model` 永不返回半成品，下次只重取缺失项） | 删除已校验的文件等于放弃可续传；命中判定逐文件独立，不会把半成品当就绪。**口径已按此修正** |
+| 未规定 | 额外写 `SOURCES.json`（revision + 各文件 sha） | 只是出货记录，**从不参与命中判定**（命中只认 sha），有一条测试钉住「陈旧 manifest 不影响命中」 |
+| 未规定 | `spec.files` 为空 → 返回空目录（fail-open） | 尚无消费方；Task 3 接线时应拒绝空 spec |
+| `fetch` 注入点 | 签名外的辅助 `sha256_file()` / `read_sources()` | 测试不重复实现哈希逻辑 |
 
 ---
 
