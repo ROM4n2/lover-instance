@@ -528,6 +528,31 @@ func TestRun_RecordsTheSentimentRunAsAJob(t *testing.T) {
 	}
 }
 
+// TestRun_RecordsCoverageOnARunThatFindsNothingLeftToScore covers the case the
+// per-block heartbeat cannot: a second run over a fully scored conversation
+// sends no blocks at all, so a job row built only from block callbacks would
+// say 0/0 and a dashboard would show a finished conversation as never started.
+func TestRun_RecordsCoverageOnARunThatFindsNothingLeftToScore(t *testing.T) {
+	h := newHarness(t)
+	srv := fakeNLPService(t, "lexicon-hownet-v1")
+	for i := 0; i < 2; i++ {
+		if got := invoke(t, h.args("--nlp-url", srv.URL)...); got.code != exitOK {
+			t.Fatalf("run %d failed: %s", i+1, got.stderr)
+		}
+	}
+
+	var done, total int
+	err := openDB(t, h.db).DB().QueryRowContext(context.Background(),
+		`SELECT done, total FROM analysis_jobs WHERE kind = 'sentiment' ORDER BY id DESC LIMIT 1`).
+		Scan(&done, &total)
+	if err != nil {
+		t.Fatalf("read the job row: %v", err)
+	}
+	if done != 4 || total != 4 {
+		t.Errorf("done/total = %d/%d, want 4/4: the row must report the conversation's coverage, not this run's zero blocks", done, total)
+	}
+}
+
 // onlySentimentJob reads the one job row a scoring run left behind.
 func onlySentimentJob(t *testing.T, path string) (status, errMsg string) {
 	t.Helper()

@@ -448,13 +448,13 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 
 	var heartbeatErr error
 	progress, runErr := analyze.RunSentimentProgress(ctx, s, client, talker, health.ModelVersion, nlp.MaxBatchSize,
-		func(scored, total int) {
+		func(_ int, _ int) {
 			// The first failure wins: later heartbeats would be recorded against
 			// a job whose progress is already known to be stale.
 			if heartbeatErr != nil {
 				return
 			}
-			heartbeatErr = jobs.Heartbeat(ctx, s, job.ID, scored, total)
+			heartbeatErr = recordJobProgress(ctx, s, job.ID, talker, health.ModelVersion)
 		})
 	if runErr == nil {
 		// A heartbeat that failed is a database that stopped recording the run.
@@ -464,6 +464,15 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 	}
 	if runErr == nil {
 		runErr = s.RebuildSentimentMetrics(ctx, talker, health.ModelVersion)
+	}
+	if runErr == nil {
+		// The last write is the authoritative one. A run over a conversation
+		// that was already fully scored sends no blocks at all, so without this
+		// a finished job would be recorded as 0/0 and a dashboard would show a
+		// run that never started. Coverage is also what a resumed run needs:
+		// the per-block numbers count this run's messages, not the
+		// conversation's.
+		runErr = recordJobProgress(ctx, s, job.ID, talker, health.ModelVersion)
 	}
 
 	// The job's outcome is derived from the same error the command reports, so
@@ -498,6 +507,22 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		return health.ModelVersion, progress.Scored, runErr
 	}
 	return health.ModelVersion, progress.Scored, nil
+}
+
+// recordJobProgress writes how much of the conversation is scored, not how much
+// this run scored.
+//
+// ADR-0002 asks the job row for absolute values because a resumed run only
+// handles the missing blocks: recording "12 scored" on a conversation with
+// 22,093 would show a finished conversation as barely started. Coverage is the
+// only number that answers "how far along is this?" for both a fresh run and a
+// run that found nothing left to do.
+func recordJobProgress(ctx context.Context, s *store.Store, jobID int64, talker, modelVersion string) error {
+	coverage, err := s.SentimentCoverage(ctx, talker, modelVersion)
+	if err != nil {
+		return err
+	}
+	return jobs.Heartbeat(ctx, s, jobID, coverage.Scored, coverage.Total)
 }
 
 // writeReport renders the report next to its final name and renames it into
