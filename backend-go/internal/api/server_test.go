@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -127,6 +128,33 @@ func TestHealth_DegradesWhenTheNLPServiceIsNotRunning(t *testing.T) {
 	}
 	if response.NLP.AvailableVersions == nil {
 		t.Error("nlp.available_versions = null, want an empty list: the client renders the menu, and a null is not a menu")
+	}
+}
+
+// TestHealth_DoesNotCallABusyServiceDead is the badge's honesty check.
+//
+// On a real scoring run the nlp-service answered /health in about 2.9 seconds:
+// the probe queues behind the batch it is scoring. A probe timeout shorter than
+// that reported "the sentiment service is not running" while the service was in
+// fact the thing doing the work — the one moment a reader is watching the badge.
+func TestHealth_DoesNotCallABusyServiceDead(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		// Slower than the old two-second budget, faster than the current one.
+		time.Sleep(2900 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"status":"ready","model_version":"lexicon-hownet-v1","available_versions":["lexicon-hownet-v1"]}`)
+	})
+	service := httptest.NewServer(mux)
+	t.Cleanup(service.Close)
+
+	engine := New(Options{Store: testStore(t), NLPURL: service.URL, Version: "test"})
+	response := decodeHealth(t, get(t, engine, "/api/health").Body.Bytes())
+	if !response.NLP.Reachable {
+		t.Error("nlp.reachable = false, want true: a service that is slow because it is scoring is busy, not dead")
+	}
+	if response.Status != statusOK {
+		t.Errorf("status = %q, want %q", response.Status, statusOK)
 	}
 }
 

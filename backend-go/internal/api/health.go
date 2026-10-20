@@ -19,7 +19,13 @@ const (
 	// holds a single connection, so a health check that waited behind a long
 	// transaction would report the dashboard as down for as long as the run
 	// lasts — the badge exists to tell "not running" apart from "busy".
-	healthTimeout = 2 * time.Second
+	//
+	// Five seconds, not two: measured on a real scoring run, the nlp-service
+	// answers /health in about 2.9s while it is chewing through a batch (the
+	// request queues behind the work), so a 2s probe reported "the sentiment
+	// service is not running" exactly while it was the thing doing the work.
+	// The badge lied at the one moment a reader was watching it.
+	healthTimeout = 5 * time.Second
 
 	// statusDegraded is returned when some part of the system cannot do its
 	// job. It is not an error status: the badge in the corner has to be able

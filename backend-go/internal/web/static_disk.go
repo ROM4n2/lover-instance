@@ -39,9 +39,14 @@ func distFS() (http.FileSystem, bool) {
 // index.html wins.
 func fallbackDirs() []string {
 	dirs := []string{
-		// Repo-relative paths, for `go run ./cmd/server` and `go test`.
+		// Repo-relative paths, for `go run ./cmd/server` and `go test` run from
+		// the repository root.
 		filepath.Join("frontend", "dist"),
 		filepath.Join("backend-go", "internal", "web", "dist"),
+		// From backend-go, which is where `go build ./cmd/server` is run from:
+		// the build output sits inside this very module.
+		filepath.Join("internal", "web", "dist"),
+		filepath.Join("..", "backend-go", "internal", "web", "dist"),
 		// Package-relative, for a test whose working directory is this package.
 		"dist",
 		filepath.Join("..", "frontend", "dist"),
