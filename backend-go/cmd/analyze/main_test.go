@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"lover-instance/backend-go/internal/report"
 	"lover-instance/backend-go/internal/store"
@@ -690,6 +691,116 @@ func TestRun_RefusesToStartASecondPassWhileAJobHoldsTheSlot(t *testing.T) {
 	}
 }
 
+// TestRun_RefusesWhileAnotherProcessIsStillBeating is the concurrent-CLI case
+// the staleness window exists for. The other run's row is 'running' and its
+// heartbeat is current, so that process is alive: recovering it would free the
+// slot for this one, and two passes over one conversation score overlapping
+// blocks — word_freq_v2 accumulates, so the overlap doubles the word counts.
+func TestRun_RefusesWhileAnotherProcessIsStillBeating(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if out := invoke(t, h.args("--skip-sentiment")...); out.code != exitOK {
+		t.Fatalf("behavioral run failed: %s", out.stderr)
+	}
+
+	// What a live second CLI leaves in the table: a running row whose heartbeat
+	// was written moments ago.
+	live := openDB(t, h.db)
+	beating, err := live.InsertJob(ctx, "wxid_peer", "sentiment", "lexicon-hownet-v1")
+	if err != nil {
+		t.Fatalf("InsertJob() error: %v", err)
+	}
+	if _, err := live.TransitionJob(ctx, beating.ID, []string{"queued"}, "running", ""); err != nil {
+		t.Fatalf("TransitionJob(queued→running) error: %v", err)
+	}
+	if err := live.Close(); err != nil {
+		t.Fatalf("close the store: %v", err)
+	}
+	if err := os.Remove(h.out); err != nil {
+		t.Fatalf("remove the previous report: %v", err)
+	}
+
+	var blocks atomic.Int64
+	srv := fakeNLPServiceWithScore(t, "lexicon-hownet-v1", func(w http.ResponseWriter, r *http.Request) {
+		blocks.Add(1)
+		echoScore(w, r)
+	})
+	got := invoke(t, h.args("--nlp-url", srv.URL)...)
+
+	if got.code != exitFailure {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitFailure, got.stderr)
+	}
+	if n := blocks.Load(); n != 0 {
+		t.Errorf("the service was asked to score %d block(s), want 0: the other process is still scoring them", n)
+	}
+	if !strings.Contains(got.stderr, "already holds this conversation") {
+		t.Errorf("stderr does not explain why the run stopped: %q", got.stderr)
+	}
+	// The reason has to be the heartbeat: that is what tells the reader the other
+	// process is alive rather than a corpse they should have been rid of.
+	if !strings.Contains(got.stderr, "heartbeat") {
+		t.Errorf("stderr does not say the other run's heartbeat is current: %q", got.stderr)
+	}
+	if strings.Contains(got.stderr, "marked") {
+		t.Errorf("stderr reports a recovery of a live run: %q", got.stderr)
+	}
+	if _, err := os.Stat(h.out); !os.IsNotExist(err) {
+		t.Error("a report was written while another process held the slot")
+	}
+	status, _ := onlySentimentJob(t, h.db)
+	if status != "running" {
+		t.Errorf("job status = %q, want %q: a run that is still going must not be marked interrupted by a second CLI", status, "running")
+	}
+}
+
+// TestKeepFresh_BeatsOnItsOwnClockAndStopsWhenTold is the only evidence that the
+// heartbeat is independent of the work. A block is one HTTP call that can take
+// the whole block timeout, so a heartbeat tied to committed blocks leaves the
+// row untouched for minutes and the next process reads that as a dead run.
+func TestKeepFresh_BeatsOnItsOwnClockAndStopsWhenTold(t *testing.T) {
+	var beats atomic.Int64
+	stop := keepFresh(context.Background(), 5*time.Millisecond,
+		func(context.Context) error {
+			beats.Add(1)
+			return nil
+		},
+		func(err error) { t.Errorf("beat reported %v, want no error", err) })
+
+	time.Sleep(60 * time.Millisecond)
+	if got := beats.Load(); got < 3 {
+		t.Fatalf("beats in 60ms = %d, want at least 3: the beat has to run on its own clock, not per block", got)
+	}
+	stop()
+	settled := beats.Load()
+	time.Sleep(30 * time.Millisecond)
+	if got := beats.Load(); got != settled {
+		t.Errorf("beats = %d 30ms after stop, want %d: the writer must be gone before the caller closes the job", got, settled)
+	}
+}
+
+// TestKeepFresh_StopsWithoutWaitingForTheNextBeat is the Ctrl-C path: the run's
+// context is cancelled and the closing writes must not queue behind a tick that
+// is an hour away.
+func TestKeepFresh_StopsWithoutWaitingForTheNextBeat(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := keepFresh(ctx, time.Hour, func(context.Context) error {
+		t.Error("the beat ran although the run was cancelled")
+		return nil
+	}, func(err error) { t.Errorf("beat reported %v, want no error", err) })
+
+	cancel()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		stop()
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop() blocked after the context was cancelled")
+	}
+}
+
 // TestRun_CreatesNoJobWhenSentimentIsSkipped keeps the job table meaning "a long
 // analysis actually ran". A behavioral-only run finishes in seconds and has
 // nothing to resume.
@@ -727,6 +838,14 @@ func TestRun_MarksAKilledRunAsInterruptedBeforeStartingAgain(t *testing.T) {
 	}
 	if _, err := stale.TransitionJob(ctx, killed.ID, []string{"queued"}, "running", ""); err != nil {
 		t.Fatalf("TransitionJob(queued→running) error: %v", err)
+	}
+	// A killed process stops beating, and that silence is what marks it dead: ten
+	// minutes without a write, well past jobs.StaleAfter. A row written a second
+	// ago belongs to a live run, which
+	// TestRun_RefusesWhileAnotherProcessIsStillBeating covers.
+	if _, err := stale.DB().ExecContext(ctx,
+		`UPDATE analysis_jobs SET updated_at = datetime('now', '-600 seconds') WHERE id = ?`, killed.ID); err != nil {
+		t.Fatalf("age the killed job's heartbeat: %v", err)
 	}
 	if err := stale.Close(); err != nil {
 		t.Fatalf("close the store: %v", err)

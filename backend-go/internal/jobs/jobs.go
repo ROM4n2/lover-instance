@@ -23,6 +23,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"lover-instance/backend-go/internal/store"
 )
@@ -213,6 +214,13 @@ func Resume(ctx context.Context, s *store.Store, id int64) error {
 	return nil
 }
 
+// StaleAfter is how long a running job may go without a heartbeat before it is
+// treated as dead. It must exceed the heartbeat cadence by a wide margin: a live
+// run beats every 10s, so 90s means nine missed beats — long enough that a slow
+// block, a stalled write or a busy machine cannot produce a false death, short
+// enough that a killed run stops blocking the next start within seconds.
+const StaleAfter = 90 * time.Second
+
 // Recover marks the runs a previous process left behind and reports how many it
 // changed.
 //
@@ -223,8 +231,15 @@ func Resume(ctx context.Context, s *store.Store, id int64) error {
 // and a fresh start can take the slot while the old job stays available to
 // Resume. Returning the count lets the CLI say that it happened instead of
 // silently changing state behind the user's back.
+//
+// "Left behind" means the heartbeat stopped, not merely that the row says
+// running: a second CLI started while the first is still scoring must leave it
+// alone. Interrupting a live run frees its slot for the newcomer, and the two
+// passes then score overlapping blocks of one conversation — which word_freq_v2
+// accumulates into double counts. StaleAfter is the window that separates the
+// two cases.
 func Recover(ctx context.Context, s *store.Store, talker, kind string) (int64, error) {
-	interrupted, err := s.InterruptRunning(ctx, talker, kind)
+	interrupted, err := s.InterruptRunning(ctx, talker, kind, StaleAfter)
 	if err != nil {
 		return 0, fmt.Errorf("jobs: recover %q: %w", kind, err)
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The job tests use migratedStore from messages_test.go: an unmigrated database
@@ -341,6 +342,13 @@ func TestInterruptRunning_OnlyMovesRunningJobs(t *testing.T) {
 	if _, err := s.TransitionJob(ctx, running.ID, []string{"queued"}, "running", ""); err != nil {
 		t.Fatalf("TransitionJob(queued→running) error: %v", err)
 	}
+	// The process that owned it is gone, and that is what its heartbeat says:
+	// ten minutes without a write. Status alone no longer means "dead" — see
+	// TestInterruptRunning_OnlyInterruptsAHeartbeatThatHasGoneStale.
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE analysis_jobs SET updated_at = datetime('now', '-600 seconds') WHERE id = ?`, running.ID); err != nil {
+		t.Fatalf("age the running job's heartbeat: %v", err)
+	}
 	queued, err := s.InsertJob(ctx, "c", "other-kind", "v1")
 	if err != nil {
 		t.Fatalf("InsertJob() error: %v", err)
@@ -353,7 +361,7 @@ func TestInterruptRunning_OnlyMovesRunningJobs(t *testing.T) {
 		t.Fatalf("TransitionJob(queued→canceled) error: %v", err)
 	}
 
-	interrupted, err := s.InterruptRunning(ctx, "c", "sentiment")
+	interrupted, err := s.InterruptRunning(ctx, "c", "sentiment", 90*time.Second)
 	if err != nil {
 		t.Fatalf("InterruptRunning() error: %v", err)
 	}
@@ -375,12 +383,84 @@ func TestInterruptRunning_OnlyMovesRunningJobs(t *testing.T) {
 	}
 
 	// Nothing is running any more, so the second call changes nothing and says so.
-	again, err := s.InterruptRunning(ctx, "c", "sentiment")
+	again, err := s.InterruptRunning(ctx, "c", "sentiment", 90*time.Second)
 	if err != nil {
 		t.Fatalf("second InterruptRunning() error: %v", err)
 	}
 	if again != 0 {
 		t.Errorf("second InterruptRunning() = %d, want 0", again)
+	}
+}
+
+// TestInterruptRunning_OnlyInterruptsAHeartbeatThatHasGoneStale is the guard
+// against a second CLI stealing the single-flight slot from a run that is still
+// scoring. Two processes on one conversation each write part of the blocks, and
+// word_freq_v2 accumulates (cnt = cnt + excluded.cnt), so the overlapping part
+// is counted twice — a silent doubling of the numbers the report shows.
+//
+// uq_jobs_active makes two running rows in one (talker, kind) impossible, so
+// the index is dropped here: this test is about the WHERE clause, and it takes
+// both shapes in front of the same UPDATE to see that the aged row alone moves.
+func TestInterruptRunning_OnlyInterruptsAHeartbeatThatHasGoneStale(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX uq_jobs_active`); err != nil {
+		t.Fatalf("drop uq_jobs_active: %v", err)
+	}
+	insertRunning := func(age string) int64 {
+		t.Helper()
+		result, err := s.db.ExecContext(ctx, `
+INSERT INTO analysis_jobs (talker, kind, model_version, status, total, done, error, created_at, updated_at)
+VALUES ('c', 'sentiment', 'v1', 'running', 0, 0, NULL, datetime('now', ?), datetime('now', ?))
+`, age, age)
+		if err != nil {
+			t.Fatalf("insert a running job aged %s: %v", age, err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("read the id of the inserted job: %v", err)
+		}
+		return id
+	}
+	dead := insertRunning("-600 seconds")
+	alive := insertRunning("-1 seconds")
+
+	interrupted, err := s.InterruptRunning(ctx, "c", "sentiment", 90*time.Second)
+	if err != nil {
+		t.Fatalf("InterruptRunning() error: %v", err)
+	}
+	if interrupted != 1 {
+		t.Errorf("InterruptRunning() = %d, want 1: a row untouched for ten minutes is dead, one touched a second ago is a live run", interrupted)
+	}
+	for _, tc := range []struct {
+		id   int64
+		want string
+	}{{dead, "interrupted"}, {alive, "running"}} {
+		job, err := s.JobByID(ctx, tc.id)
+		if err != nil {
+			t.Fatalf("JobByID(%d) error: %v", tc.id, err)
+		}
+		if job.Status != tc.want {
+			t.Errorf("job %d status = %q, want %q", tc.id, job.Status, tc.want)
+		}
+	}
+
+	// A zero or negative window would mean "every running row is stale", which is
+	// the unconditional interruption this argument replaced. It is refused rather
+	// than silently degenerating into it.
+	if _, err := s.InterruptRunning(ctx, "c", "sentiment", 0); err == nil {
+		t.Error("InterruptRunning() with a zero window = nil error, want a refusal")
+	}
+	if _, err := s.InterruptRunning(ctx, "c", "sentiment", -time.Second); err == nil {
+		t.Error("InterruptRunning() with a negative window = nil error, want a refusal")
+	}
+	stillRunning, err := s.JobByID(ctx, alive)
+	if err != nil {
+		t.Fatalf("JobByID(%d) error: %v", alive, err)
+	}
+	if stillRunning.Status != "running" {
+		t.Errorf("status = %q after the refused calls, want %q", stillRunning.Status, "running")
 	}
 }
 

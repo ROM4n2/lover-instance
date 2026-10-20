@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	sqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -247,12 +248,33 @@ UPDATE analysis_jobs
 // finished one has an outcome that must not be rewritten. The rows it produces
 // are outside uq_jobs_active on purpose — that is what frees the slot for the
 // next run while leaving the interrupted job available to be resumed.
-func (s *Store) InterruptRunning(ctx context.Context, talker, kind string) (int64, error) {
+//
+// "Left behind" is decided by the heartbeat, not by the status alone. updated_at
+// is maintained by every heartbeat and progress write, so a running row that has
+// not been written for staleFor belongs to a process that is no longer there: a
+// live worker does not go that long without recording something. Interrupting on
+// the status alone is what lets a second CLI steal the slot from a run that is
+// still scoring, and two passes over one conversation write overlapping blocks —
+// word_freq_v2 accumulates (cnt = cnt + excluded.cnt), so the overlap doubles
+// the counts instead of merely repeating work.
+//
+// staleFor must be positive. Zero or negative would make every running row look
+// dead, which is the unconditional interruption this window exists to remove, so
+// it is refused rather than quietly degenerating into it.
+func (s *Store) InterruptRunning(ctx context.Context, talker, kind string, staleFor time.Duration) (int64, error) {
+	if staleFor <= 0 {
+		return 0, fmt.Errorf("interrupt the running job %q: the staleness window %s must be positive, since zero would mark every running job dead", kind, staleFor)
+	}
+	// The window is built here rather than passed as a number of seconds by a
+	// caller, so the SQL modifier cannot be given a positive sign by mistake:
+	// '+90 seconds' matches nothing and the recovery would silently stop working.
+	window := fmt.Sprintf("-%d seconds", int64(staleFor.Seconds()))
 	result, err := s.db.ExecContext(ctx, `
 UPDATE analysis_jobs
    SET status = 'interrupted', updated_at = datetime('now')
  WHERE talker = ? AND kind = ? AND status = 'running'
-`, talker, kind)
+   AND updated_at < datetime('now', ?)
+`, talker, kind, window)
 	if err != nil {
 		return 0, fmt.Errorf("interrupt the running job %q: %w", kind, err)
 	}

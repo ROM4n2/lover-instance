@@ -212,6 +212,13 @@ func TestRecover_FreesTheSlotAKilledRunLeftBehind(t *testing.T) {
 	}
 
 	s = openJobsStore(t, path)
+	// A killed process stops beating, so its row is old: ten minutes of silence.
+	// A row written a second ago belongs to a run that is still alive, and
+	// TestRecover_LeavesALiveRunAlone is where that half lives.
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE analysis_jobs SET updated_at = datetime('now', '-600 seconds') WHERE id = ?`, killed.ID); err != nil {
+		t.Fatalf("age the killed job's heartbeat: %v", err)
+	}
 	interrupted, err := Recover(ctx, s, "c", "sentiment")
 	if err != nil {
 		t.Fatalf("Recover() error: %v", err)
@@ -261,6 +268,88 @@ func TestRecover_FreesTheSlotAKilledRunLeftBehind(t *testing.T) {
 	}
 	if resumed.Status != StatusRunning {
 		t.Errorf("status = %q after Resume, want %q", resumed.Status, StatusRunning)
+	}
+}
+
+// TestRecover_LeavesALiveRunAlone is the concurrency half of recovery: the
+// second CLI must not take the slot away from a process that is still scoring.
+// Interrupting a live run does not merely duplicate work — the anti-join makes
+// both processes write part of the blocks, and word_freq_v2 accumulates
+// (cnt = cnt + excluded.cnt), so whatever both of them touch is counted twice.
+//
+// The two halves are the same store and the same call: a fresh heartbeat is
+// left alone, and the same row is recovered once its heartbeat is older than
+// StaleAfter.
+func TestRecover_LeavesALiveRunAlone(t *testing.T) {
+	ctx := context.Background()
+	s := openJobsStore(t, filepath.Join(t.TempDir(), "data.db"))
+
+	live, created, err := Start(ctx, s, "c", "sentiment", "v1")
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if !created {
+		t.Fatal("Start() created = false for the first start")
+	}
+
+	interrupted, err := Recover(ctx, s, "c", "sentiment")
+	if err != nil {
+		t.Fatalf("Recover() error: %v", err)
+	}
+	if interrupted != 0 {
+		t.Errorf("Recover() = %d, want 0: the run's heartbeat is current, so another process is still working on it", interrupted)
+	}
+	after, err := s.JobByID(ctx, live.ID)
+	if err != nil {
+		t.Fatalf("JobByID() error: %v", err)
+	}
+	if after.Status != StatusRunning {
+		t.Errorf("status = %q after Recover, want %q: a live run must keep its slot", after.Status, StatusRunning)
+	}
+
+	// A second start therefore loses the race on purpose and adopts the live job
+	// instead of beginning a pass of its own.
+	adopted, created, err := Start(ctx, s, "c", "sentiment", "v1")
+	if err != nil {
+		t.Fatalf("second Start() error: %v", err)
+	}
+	if created {
+		t.Error("second Start() created = true, want false: the live run still holds the slot")
+	}
+	if adopted.ID != live.ID {
+		t.Errorf("second Start() returned job %d, want the live job %d", adopted.ID, live.ID)
+	}
+
+	// Once the heartbeat has been silent for longer than StaleAfter, the same
+	// call does recover it and the slot frees up.
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE analysis_jobs SET updated_at = datetime('now', ?) WHERE id = ?`,
+		fmt.Sprintf("-%d seconds", int64(StaleAfter.Seconds())+60), live.ID); err != nil {
+		t.Fatalf("age the live job's heartbeat: %v", err)
+	}
+	interrupted, err = Recover(ctx, s, "c", "sentiment")
+	if err != nil {
+		t.Fatalf("Recover() error: %v", err)
+	}
+	if interrupted != 1 {
+		t.Errorf("Recover() = %d after %s of silence, want 1", interrupted, StaleAfter)
+	}
+	stale, err := s.JobByID(ctx, live.ID)
+	if err != nil {
+		t.Fatalf("JobByID() error: %v", err)
+	}
+	if stale.Status != StatusInterrupted {
+		t.Errorf("status = %q, want %q", stale.Status, StatusInterrupted)
+	}
+	fresh, created, err := Start(ctx, s, "c", "sentiment", "v1")
+	if err != nil {
+		t.Fatalf("Start() after recovery error: %v", err)
+	}
+	if !created {
+		t.Error("Start() created = false, want true: an interrupted row is outside uq_jobs_active")
+	}
+	if fresh.ID == live.ID {
+		t.Errorf("Start() adopted the interrupted job %d, want a new id", fresh.ID)
 	}
 }
 

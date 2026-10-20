@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"lover-instance/backend-go/internal/analyze"
@@ -58,6 +59,13 @@ const (
 	// wedged database and a Ctrl-C that never returns.
 	finishTimeout = 5 * time.Second
 )
+
+// heartbeatInterval is how often a live run refreshes its job row, and it is a
+// variable rather than a constant so a test can shorten it. It has to be well
+// under jobs.StaleAfter (a 10s beat against a 90s window is nine missed beats of
+// margin), because the row it writes is what tells a second CLI that this
+// process is still alive.
+var heartbeatInterval = 10 * time.Second
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -399,6 +407,47 @@ func resolveTalker(imported ingest.Report, requested string) (string, error) {
 	}
 }
 
+// keepFresh runs beat on its own clock until the returned stop is called, and
+// stop waits for the goroutine to exit.
+//
+// The beat cannot be tied to committed blocks. A block is one HTTP call that may
+// legitimately take the whole block timeout, so a run can go minutes without
+// touching its job row, and jobs.Recover reads silence as a dead process; the
+// row would then be interrupted while this process is still scoring. Waiting for
+// stop before returning is the other half: a beat that lands after the job was
+// closed fails against a finished row, and one that overlaps the closing write
+// is two writers on one row.
+//
+// A cancelled context is a second way out, so a Ctrl-C does not leave stop
+// waiting for a tick that may be a minute away. every must be positive;
+// time.NewTicker panics otherwise.
+func keepFresh(ctx context.Context, every time.Duration, beat func(context.Context) error, onErr func(error)) (stop func()) {
+	quit := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-quit:
+				return
+			case <-ticker.C:
+				if err := beat(ctx); err != nil {
+					onErr(err)
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(quit) })
+		<-exited
+	}
+}
+
 // scoreSentiment asks the service which lexicon it holds, scores the
 // conversation with it, and rolls the polarity into the daily table.
 //
@@ -443,24 +492,56 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		// over one conversation that ADR-0002 exists to prevent, so this run
 		// stops before it sends a single block. The message names the job rather
 		// than the conversation: stderr ends up in pasted bug reports.
-		return "", 0, fmt.Errorf("a %s job already holds this conversation (job %d, status %q), so this run is not starting a second scoring pass; re-run once that job has finished", jobKindSentiment, job.ID, job.Status)
+		//
+		// Recover ran immediately before this, and it interrupts every run whose
+		// heartbeat has stopped. So a slot still held here is held by a process
+		// that is alive, and saying so is what stops the reader from deleting a
+		// row — or waiting — for a job nobody is working on.
+		return "", 0, fmt.Errorf("a %s job already holds this conversation (job %d, status %q) and its heartbeat is still current, so another process is still working on it; this run is not starting a second scoring pass — re-run once that job has finished", jobKindSentiment, job.ID, job.Status)
 	}
 
+	// The beat and the per-block callback write the same row from two goroutines,
+	// so the outcome is kept behind a mutex: run under -race with a plain field
+	// and this is a data race, and the run's reported failure would be whichever
+	// write the scheduler let land last.
+	var heartbeatMu sync.Mutex
 	var heartbeatErr error
+	noteHeartbeat := func(err error) {
+		if err == nil {
+			return
+		}
+		heartbeatMu.Lock()
+		defer heartbeatMu.Unlock()
+		// The first failure wins: later heartbeats would be recorded against a
+		// job whose progress is already known to be stale.
+		if heartbeatErr == nil {
+			heartbeatErr = err
+		}
+	}
+	heartbeatFailure := func() error {
+		heartbeatMu.Lock()
+		defer heartbeatMu.Unlock()
+		return heartbeatErr
+	}
+	beat := func(ctx context.Context) error {
+		return recordJobProgress(ctx, s, job.ID, talker, health.ModelVersion)
+	}
+	stopHeartbeat := keepFresh(ctx, heartbeatInterval, beat, noteHeartbeat)
+	defer stopHeartbeat()
+
 	progress, runErr := analyze.RunSentimentProgress(ctx, s, client, talker, health.ModelVersion, nlp.MaxBatchSize,
 		func(_ int, _ int) {
-			// The first failure wins: later heartbeats would be recorded against
-			// a job whose progress is already known to be stale.
-			if heartbeatErr != nil {
-				return
-			}
-			heartbeatErr = recordJobProgress(ctx, s, job.ID, talker, health.ModelVersion)
+			noteHeartbeat(recordJobProgress(ctx, s, job.ID, talker, health.ModelVersion))
 		})
+	// Before anything that closes the run, and it waits for the goroutine: the
+	// closing write and a beat landing at the same moment are two writers on one
+	// row, and a beat after Finish is an error against a finished job.
+	stopHeartbeat()
 	if runErr == nil {
 		// A heartbeat that failed is a database that stopped recording the run.
 		// The scores are committed, so re-running costs only the missing blocks
 		// — cheaper than a job row that understates what was done.
-		runErr = heartbeatErr
+		runErr = heartbeatFailure()
 	}
 	if runErr == nil {
 		runErr = s.RebuildSentimentMetrics(ctx, talker, health.ModelVersion)
