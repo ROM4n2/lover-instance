@@ -4,6 +4,7 @@
 // The state machine is the contract ADR-0002 fixed:
 //
 //	queued    → running                          Start claims the job it inserted
+//	queued    → failed | canceled                Finish, for a run that died before its claim
 //	running   → done | failed | canceled | interrupted
 //	interrupted → running                        Resume, after Recover
 //
@@ -57,6 +58,10 @@ type Job = store.Job
 // already owns the (talker, kind) slot and the returned job is that one: the
 // caller must not start a second pass over the conversation.
 //
+// The returned job is running in both cases. A job adopted at queued is claimed
+// on the way out, because a row still reading queued while a worker scores that
+// conversation is the state nobody is in.
+//
 // The insert-then-look order is the whole mechanism. Looking first and
 // inserting afterwards has a window in which two callers both see an empty
 // slot, and the cost of losing that race is two inference passes writing the
@@ -68,33 +73,67 @@ func Start(ctx context.Context, s *store.Store, talker, kind, modelVersion strin
 	}
 	job, err := s.InsertJob(ctx, talker, kind, modelVersion)
 	if err != nil {
+		// Only uq_jobs_active means "someone else is running". The insert fails
+		// the same way for a full disk, a read-only file or a closed handle, and
+		// adopting a job on those would report a run that does not exist while
+		// the actual fault goes unreported.
+		if !store.IsUniqueViolation(err) {
+			return Job{}, false, err
+		}
 		existing, ok, lookupErr := s.ActiveJob(ctx, talker, kind)
 		if lookupErr != nil {
 			return Job{}, false, lookupErr
 		}
 		if !ok {
-			// Nothing holds the slot, so the insert failed for some other
-			// reason — a full disk, a corrupt file — and the caller has to see
-			// it. Reporting a job that does not exist would be worse.
+			// The constraint fired but nothing covers the slot any more: the
+			// row it collided with is gone, and the insert error is the only
+			// truthful thing left to report.
 			return Job{}, false, err
 		}
-		return existing, false, nil
+		if existing.Status == StatusRunning {
+			// A live run owns the slot and the row already says so. Writing
+			// again would be a second claim, not a second owner.
+			return existing, false, nil
+		}
+		adopted, claimErr := claimQueued(ctx, s, existing.ID, kind)
+		if claimErr != nil {
+			return Job{}, false, claimErr
+		}
+		return adopted, false, nil
 	}
-	claimed, err := s.TransitionJob(ctx, job.ID, []string{StatusQueued}, StatusRunning, "")
-	if err != nil {
-		return Job{}, false, fmt.Errorf("jobs: start %q: %w", kind, err)
-	}
-	if !claimed {
-		// Nothing in this package may have moved the row: the slot was ours.
-		// A second runner adopting it would mean the database lost a write, and
-		// reporting that is better than pretending this run owns the job.
-		return Job{}, false, fmt.Errorf("jobs: start %q: job %d was no longer queued when it was claimed", kind, job.ID)
-	}
-	claimedJob, err := s.JobByID(ctx, job.ID)
+	claimedJob, err := claimQueued(ctx, s, job.ID, kind)
 	if err != nil {
 		return Job{}, false, err
 	}
 	return claimedJob, true, nil
+}
+
+// claimQueued moves a queued job to running and returns it as stored.
+//
+// Both the run that inserted the row and a run adopting it end up here, so the
+// guarded UPDATE decides which of them moves it: whoever wins, the other reads
+// the row back, finds it running, and gets the same answer. That is why losing
+// the claim is not an error — the question is whether the job is running, not
+// who wrote the status. It also keeps the row honest for the whole pass: a job
+// that stays 'queued' while a worker is scoring it documents a state nobody is
+// in, and Recover cannot repair that afterwards, since Recover only moves
+// running jobs.
+func claimQueued(ctx context.Context, s *store.Store, id int64, kind string) (Job, error) {
+	moved, err := s.TransitionJob(ctx, id, []string{StatusQueued}, StatusRunning, "")
+	if err != nil {
+		return Job{}, fmt.Errorf("jobs: start %q: %w", kind, err)
+	}
+	claimed, err := s.JobByID(ctx, id)
+	if err != nil {
+		return Job{}, err
+	}
+	if !moved && claimed.Status != StatusRunning {
+		// Neither the claim nor the read finds a job this run may work on:
+		// something closed or interrupted the row between the insert and here,
+		// and carrying on would score a conversation nobody asked about.
+		return Job{}, fmt.Errorf("jobs: start %q: job %d is %q when it should be queued or running", kind, id, claimed.Status)
+	}
+	return claimed, nil
 }
 
 // Heartbeat records a committed block's progress.
@@ -114,23 +153,34 @@ func Heartbeat(ctx context.Context, s *store.Store, id int64, done, total int) e
 
 // Finish closes a job with one of the final statuses.
 //
-// running is the normal source state. queued is accepted too, deliberately: a
-// run can fail between being inserted and being claimed (an out-of-range batch
-// size, a context cancelled at that instant), and leaving that row queued would
-// hold the single-flight slot for a conversation nobody is working on, blocking
-// every later start. A job that has already finished is refused, so a duplicate
-// Finish cannot rewrite a recorded outcome — that is how "done" would quietly
-// become "failed".
+// The source states are not the same for every outcome:
+//
+//   - done only follows running. A job that was never claimed did no work, and
+//     accepting queued→done would let a bug that never ran the pass — a batch
+//     size refused at the first check, a claim that silently failed — report a
+//     finished conversation.
+//   - failed and canceled also follow queued, deliberately: a run can die
+//     between being inserted and being claimed, and leaving that row open would
+//     hold the single-flight slot for a conversation nobody is working on,
+//     blocking every later start.
+//
+// A job that has already finished is refused, so a duplicate Finish cannot
+// rewrite a recorded outcome — that is how "done" would quietly become
+// "failed".
 //
 // errMsg becomes the job's error column; an empty message clears it, because a
 // run that closed cleanly must not inherit a previous attempt's failure.
 func Finish(ctx context.Context, s *store.Store, id int64, status, errMsg string) error {
+	var from []string
 	switch status {
-	case StatusDone, StatusFailed, StatusCanceled:
+	case StatusDone:
+		from = []string{StatusRunning}
+	case StatusFailed, StatusCanceled:
+		from = []string{StatusQueued, StatusRunning}
 	default:
 		return fmt.Errorf("jobs: finish job %d: %q is not a final status", id, status)
 	}
-	if err := move(ctx, s, id, []string{StatusQueued, StatusRunning}, status, errMsg); err != nil {
+	if err := move(ctx, s, id, from, status, errMsg); err != nil {
 		return fmt.Errorf("jobs: finish job %d: %w", id, err)
 	}
 	return nil

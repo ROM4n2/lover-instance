@@ -113,6 +113,82 @@ func TestStart_ReportsAFreshJobAsRunning(t *testing.T) {
 	}
 }
 
+// TestStart_ClaimsAQueuedJobItAdopts pins the adopted-job path. A queued row is
+// what a run leaves behind when it dies between the insert and the claim, and it
+// holds the single-flight slot. Handing it to the next run at 'queued' would
+// leave the row describing a state nobody is in for the whole pass, and Recover
+// cannot repair it afterwards: Recover only moves running jobs.
+func TestStart_ClaimsAQueuedJobItAdopts(t *testing.T) {
+	ctx := context.Background()
+	s := openJobsStore(t, filepath.Join(t.TempDir(), "data.db"))
+
+	queued, err := s.InsertJob(ctx, "c", "sentiment", "v1")
+	if err != nil {
+		t.Fatalf("InsertJob() error: %v", err)
+	}
+
+	adopted, created, err := Start(ctx, s, "c", "sentiment", "v1")
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if created {
+		t.Error("Start() created = true, want false: the queued row already held the slot")
+	}
+	if adopted.ID != queued.ID {
+		t.Errorf("Start() adopted job %d, want %d", adopted.ID, queued.ID)
+	}
+	if adopted.Status != StatusRunning {
+		t.Errorf("status = %q, want %q: an adopted job is claimed, not passed through", adopted.Status, StatusRunning)
+	}
+	stored, err := s.JobByID(ctx, queued.ID)
+	if err != nil {
+		t.Fatalf("JobByID() error: %v", err)
+	}
+	if stored.Status != StatusRunning {
+		t.Errorf("stored status = %q, want %q: the row must say a run is in progress", stored.Status, StatusRunning)
+	}
+
+	// Adopting a job that is already running writes nothing: the row already
+	// says what is happening, and a second claim is not a second owner.
+	running, created, err := Start(ctx, s, "c", "sentiment", "v1")
+	if err != nil {
+		t.Fatalf("second Start() error: %v", err)
+	}
+	if created {
+		t.Error("second Start() created = true, want false")
+	}
+	if running.Status != StatusRunning {
+		t.Errorf("status = %q after a second start, want %q", running.Status, StatusRunning)
+	}
+}
+
+// TestStart_ReportsTheWriteFailureRatherThanInventingAJob separates "someone
+// else holds the slot" from "the write itself failed". A full disk, a read-only
+// file or a closed handle all land in the same place as a single-flight
+// conflict, and reporting any of them as an existing job would tell the user a
+// run is in progress while their real fault stays invisible.
+func TestStart_ReportsTheWriteFailureRatherThanInventingAJob(t *testing.T) {
+	ctx := context.Background()
+	s := openJobsStore(t, filepath.Join(t.TempDir(), "data.db"))
+	if err := s.Close(); err != nil {
+		t.Fatalf("close the store: %v", err)
+	}
+
+	_, created, err := Start(ctx, s, "c", "sentiment", "v1")
+	if err == nil {
+		t.Fatal("Start() against a closed store = nil error, want the write failure")
+	}
+	if created {
+		t.Error("Start() created = true on a failed insert, want false")
+	}
+	// The message has to name the insert. A message about the follow-up lookup
+	// is what a single-flight check that swallows every error produces, and it
+	// sends the reader looking for a conflicting run that does not exist.
+	if !strings.Contains(err.Error(), "insert job") {
+		t.Errorf("error %q does not name the failed insert", err)
+	}
+}
+
 // TestRecover_FreesTheSlotAKilledRunLeftBehind is the restart path: the process
 // is killed mid-run, its job is still 'running', and the next process has to
 // turn that into 'interrupted' before it can start anything. The interrupted
@@ -400,5 +476,41 @@ func TestFinish_ClosesAJobThatNeverStarted(t *testing.T) {
 	}
 	if closed.Status != StatusFailed {
 		t.Errorf("status = %q, want %q", closed.Status, StatusFailed)
+	}
+}
+
+// TestFinish_RefusesDoneForAJobThatNeverRan pins the plan's literal edge list:
+// queued → running → done. A job that was never claimed covers no work, so
+// calling it done would let a bug that never ran the pass — a batch size
+// refused at the first check, a claim that never happened — report a finished
+// conversation. failed and canceled stay reachable from queued, because a run
+// that dies before its claim still has to close its own row.
+func TestFinish_RefusesDoneForAJobThatNeverRan(t *testing.T) {
+	ctx := context.Background()
+	s := openJobsStore(t, filepath.Join(t.TempDir(), "data.db"))
+
+	queued, err := s.InsertJob(ctx, "c", "sentiment", "v1")
+	if err != nil {
+		t.Fatalf("InsertJob() error: %v", err)
+	}
+	err = Finish(ctx, s, queued.ID, StatusDone, "")
+	if err == nil {
+		t.Fatal("Finish(done) on a queued job = nil error, want a refusal: queued→done is not an edge")
+	}
+	for _, want := range []string{StatusQueued, StatusDone} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+	after, err := s.JobByID(ctx, queued.ID)
+	if err != nil {
+		t.Fatalf("JobByID() error: %v", err)
+	}
+	if after.Status != StatusQueued {
+		t.Errorf("status = %q after a refused move, want %q", after.Status, StatusQueued)
+	}
+
+	if err := Finish(ctx, s, queued.ID, StatusCanceled, "stopped before it started"); err != nil {
+		t.Errorf("Finish(canceled) on a queued job error: %v — a job that dies before its claim must still be closable", err)
 	}
 }

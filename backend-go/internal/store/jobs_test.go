@@ -149,6 +149,47 @@ func TestTransitionJob_OnlyMovesWhenTheGuardMatches(t *testing.T) {
 	}
 }
 
+// TestTransitionJob_RefusesAStatusTheSchemaNeverDefined is the store's half of
+// "a caller that skips package jobs still cannot write nonsense": the guard
+// makes an illegal edge match no row, but nothing in the WHERE clause would
+// stop a typo in the target from being written. A row reading "Done" or
+// "cancelled" is unreadable to every later query, so the target is checked
+// against the six values analysis_jobs may hold before the UPDATE is built.
+func TestTransitionJob_RefusesAStatusTheSchemaNeverDefined(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+
+	job, err := s.InsertJob(ctx, "c", "sentiment", "v1")
+	if err != nil {
+		t.Fatalf("InsertJob() error: %v", err)
+	}
+	for _, to := range []string{"", "Done", "RUNNING", "cancelled", "finished", "running "} {
+		moved, err := s.TransitionJob(ctx, job.ID, []string{"queued", "running"}, to, "")
+		if err == nil {
+			t.Errorf("TransitionJob(queued→%q) = %v, nil; want a refusal for a status the schema does not define", to, moved)
+		}
+	}
+	after, err := s.JobByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("JobByID() error: %v", err)
+	}
+	if after.Status != "queued" {
+		t.Errorf("status = %q after refused targets, want %q: no UPDATE should have been sent", after.Status, "queued")
+	}
+
+	// The vocabulary itself is open: these are the six values the state machine
+	// in package jobs names, and the store only refuses what is outside it.
+	for _, to := range []string{"queued", "running", "done", "failed", "canceled", "interrupted"} {
+		each, err := s.InsertJob(ctx, "c", "kind-"+to, "v1")
+		if err != nil {
+			t.Fatalf("InsertJob(%q) error: %v", to, err)
+		}
+		if _, err := s.TransitionJob(ctx, each.ID, []string{"queued"}, to, ""); err != nil {
+			t.Errorf("TransitionJob(queued→%q) error: %v — %q is a status the schema defines", to, err, to)
+		}
+	}
+}
+
 // TestTransitionJob_KeepsTheFailureMessageAndClearsItOnAnEmptyOne records the
 // decision Finish depends on: an empty message means "no error", stored as
 // NULL, so a run that finished cleanly does not carry a previous attempt's

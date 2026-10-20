@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"lover-instance/backend-go/internal/report"
@@ -48,8 +49,15 @@ type invocation struct {
 
 func invoke(t *testing.T, args ...string) invocation {
 	t.Helper()
+	return invokeWithContext(t, context.Background(), args...)
+}
+
+// invokeWithContext runs the command under a context the test controls, which
+// is how a test presses Ctrl-C without a real signal.
+func invokeWithContext(t *testing.T, ctx context.Context, args ...string) invocation {
+	t.Helper()
 	var out, errOut bytes.Buffer
-	code := run(context.Background(), args, &out, &errOut)
+	code := run(ctx, args, &out, &errOut)
 	return invocation{code: code, stdout: out.String(), stderr: errOut.String()}
 }
 
@@ -288,33 +296,44 @@ func TestRun_RefusesAnEmptyExport(t *testing.T) {
 // version it holds and echoing one score per item.
 func fakeNLPService(t *testing.T, modelVersion string) *httptest.Server {
 	t.Helper()
+	return fakeNLPServiceWithScore(t, modelVersion, echoScore)
+}
+
+// echoScore is the healthy service: one score per item it was sent.
+func echoScore(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ModelVersion string `json:"model_version"`
+		Items        []struct {
+			MsgID   int64  `json:"msg_id"`
+			Content string `json:"content"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	results := make([]map[string]any, 0, len(request.Items))
+	for _, item := range request.Items {
+		results = append(results, map[string]any{
+			"msg_id": item.MsgID, "polarity": 0.6, "emotion": "乐", "intensity": 0.5,
+			"tokens": []string{"开心", "[捂脸]"},
+		})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"model_version": request.ModelVersion, "results": results})
+}
+
+// fakeNLPServiceWithScore serves the same readiness report but hands /score to
+// the caller, so a test can make the scoring pass fail or stop mid-run without
+// standing up a second kind of service.
+func fakeNLPServiceWithScore(t *testing.T, modelVersion string, score http.HandlerFunc) *httptest.Server {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status": "ready", "model_loaded": false, "model_version": modelVersion,
 		})
 	})
-	mux.HandleFunc("/score", func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			ModelVersion string `json:"model_version"`
-			Items        []struct {
-				MsgID   int64  `json:"msg_id"`
-				Content string `json:"content"`
-			} `json:"items"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		results := make([]map[string]any, 0, len(request.Items))
-		for _, item := range request.Items {
-			results = append(results, map[string]any{
-				"msg_id": item.MsgID, "polarity": 0.6, "emotion": "乐", "intensity": 0.5,
-				"tokens": []string{"开心", "[捂脸]"},
-			})
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"model_version": request.ModelVersion, "results": results})
-	})
+	mux.HandleFunc("/score", score)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -506,6 +525,143 @@ func TestRun_RecordsTheSentimentRunAsAJob(t *testing.T) {
 	// Four analyzable messages, and the last heartbeat lands before Finish.
 	if done != 4 || total != 4 {
 		t.Errorf("done/total = %d/%d, want 4/4", done, total)
+	}
+}
+
+// onlySentimentJob reads the one job row a scoring run left behind.
+func onlySentimentJob(t *testing.T, path string) (status, errMsg string) {
+	t.Helper()
+	err := openDB(t, path).DB().QueryRowContext(context.Background(),
+		`SELECT status, COALESCE(error, '') FROM analysis_jobs WHERE kind = 'sentiment'`).
+		Scan(&status, &errMsg)
+	if err != nil {
+		t.Fatalf("read the job row: %v", err)
+	}
+	return status, errMsg
+}
+
+// TestRun_ClosesTheJobWhenTheUserCancels is the Ctrl-C path. Cancelling the
+// context is what a signal does, and every write made with that context then
+// fails: database/sql checks it before it will even hand out the connection.
+// The closing write is the one that must not inherit it, or the row stays
+// "running" forever and the CLI says the job could not be closed — which is
+// how the canceled status became unreachable in the first place.
+func TestRun_ClosesTheJobWhenTheUserCancels(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := fakeNLPServiceWithScore(t, "lexicon-hownet-v1", func(w http.ResponseWriter, r *http.Request) {
+		// The user presses Ctrl-C while the first block is being scored.
+		cancel()
+		echoScore(w, r)
+	})
+
+	got := invokeWithContext(t, ctx, h.args("--nlp-url", srv.URL)...)
+	if got.code != exitFailure {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitFailure, got.stderr)
+	}
+	if strings.Contains(got.stderr, "could not be closed") {
+		t.Errorf("stderr reports the job could not be closed: %q", got.stderr)
+	}
+	if strings.Contains(got.stderr, "wxid") {
+		t.Errorf("stderr carries the conversation key: %q", got.stderr)
+	}
+
+	status, errMsg := onlySentimentJob(t, h.db)
+	if status != "canceled" {
+		t.Errorf("job status = %q, want %q: a run the user stopped must record that, not stay running", status, "canceled")
+	}
+	if errMsg == "" {
+		t.Error("the error column is empty, want the cancellation on record")
+	}
+}
+
+// TestRun_RecordsAFailedScoringJob is the other half of the same wiring: a
+// service that refuses to score leaves a job saying "failed" and saying why.
+// Without the error column a reader cannot tell a run that never started from
+// one that died on its third block.
+func TestRun_RecordsAFailedScoringJob(t *testing.T) {
+	h := newHarness(t)
+	srv := fakeNLPServiceWithScore(t, "lexicon-hownet-v1", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "lexicon exploded", http.StatusInternalServerError)
+	})
+
+	got := invoke(t, h.args("--nlp-url", srv.URL)...)
+	if got.code != exitFailure {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitFailure, got.stderr)
+	}
+
+	status, errMsg := onlySentimentJob(t, h.db)
+	if status != "failed" {
+		t.Errorf("job status = %q, want %q", status, "failed")
+	}
+	if errMsg == "" {
+		t.Error("the error column is empty, want the reason the pass stopped")
+	}
+	if strings.Contains(errMsg, "开心") {
+		t.Errorf("the error column carries message text: %q", errMsg)
+	}
+}
+
+// TestRun_RefusesToStartASecondPassWhileAJobHoldsTheSlot is the contract
+// between jobs.Start and its only caller. Start reports created; a false means
+// another run owns the (talker, kind) slot, and this command must not send a
+// second conversation's worth of blocks through the service on top of it. The
+// row is left queued on purpose: Recover only repairs running jobs, so this is
+// exactly the state where the slot is held by something this process did not
+// create.
+func TestRun_RefusesToStartASecondPassWhileAJobHoldsTheSlot(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if out := invoke(t, h.args("--skip-sentiment")...); out.code != exitOK {
+		t.Fatalf("behavioral run failed: %s", out.stderr)
+	}
+
+	held := openDB(t, h.db)
+	job, err := held.InsertJob(ctx, "wxid_peer", "sentiment", "lexicon-hownet-v1")
+	if err != nil {
+		t.Fatalf("InsertJob() error: %v", err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatalf("close the store: %v", err)
+	}
+	// The behavioral run above legitimately wrote a report; clearing it is what
+	// makes "no report this time" a statement about the refused run.
+	if err := os.Remove(h.out); err != nil {
+		t.Fatalf("remove the previous report: %v", err)
+	}
+
+	// The handler runs on the server's goroutines, so the count is atomic: a
+	// regression has to fail on the assertion, not on a data race.
+	var blocks atomic.Int64
+	srv := fakeNLPServiceWithScore(t, "lexicon-hownet-v1", func(w http.ResponseWriter, r *http.Request) {
+		blocks.Add(1)
+		echoScore(w, r)
+	})
+	got := invoke(t, h.args("--nlp-url", srv.URL)...)
+
+	if got.code != exitFailure {
+		t.Fatalf("exit code = %d, want %d; stderr: %s", got.code, exitFailure, got.stderr)
+	}
+	if got := blocks.Load(); got != 0 {
+		t.Errorf("the service was asked to score %d block(s), want 0: the slot was already held", got)
+	}
+	if !strings.Contains(got.stderr, "already holds this conversation") {
+		t.Errorf("stderr does not explain why the run stopped: %q", got.stderr)
+	}
+	if strings.Contains(got.stderr, "wxid") {
+		t.Errorf("stderr carries the conversation key: %q", got.stderr)
+	}
+	if _, err := os.Stat(h.out); !os.IsNotExist(err) {
+		t.Error("a report was written while another job held the slot")
+	}
+	var rows int
+	if err := openDB(t, h.db).DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM analysis_jobs`).Scan(&rows); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("analysis_jobs holds %d rows, want the single job that was already there (id %d)", rows, job.ID)
 	}
 }
 

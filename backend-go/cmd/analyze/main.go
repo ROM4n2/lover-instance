@@ -52,6 +52,11 @@ const (
 	// one conversation's sentiment pass, which is the unit ADR-0002 calls a
 	// job: minute-scale work that must survive a restart.
 	jobKindSentiment = "sentiment"
+
+	// finishTimeout bounds the write that closes a job. It runs on a context
+	// that ignores cancellation, so it is the only thing standing between a
+	// wedged database and a Ctrl-C that never returns.
+	finishTimeout = 5 * time.Second
 )
 
 func main() {
@@ -428,9 +433,17 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 		fmt.Fprintf(stderr, "analyze: marked %d interrupted job(s) from a previous run\n", interrupted)
 	}
 
-	job, _, err := jobs.Start(ctx, s, talker, jobKindSentiment, health.ModelVersion)
+	job, created, err := jobs.Start(ctx, s, talker, jobKindSentiment, health.ModelVersion)
 	if err != nil {
 		return "", 0, err
+	}
+	if !created {
+		// Start reports whether this call made the job; a false means another
+		// run owns the (talker, kind) slot. Scoring anyway is the second pass
+		// over one conversation that ADR-0002 exists to prevent, so this run
+		// stops before it sends a single block. The message names the job rather
+		// than the conversation: stderr ends up in pasted bug reports.
+		return "", 0, fmt.Errorf("a %s job already holds this conversation (job %d, status %q), so this run is not starting a second scoring pass; re-run once that job has finished", jobKindSentiment, job.ID, job.Status)
 	}
 
 	var heartbeatErr error
@@ -467,7 +480,15 @@ func scoreSentiment(ctx context.Context, s *store.Store, cfg options, talker str
 			message = ctx.Err().Error()
 		}
 	}
-	if finishErr := jobs.Finish(ctx, s, job.ID, status, message); finishErr != nil {
+	// The closing write must not inherit the run's cancellation. Ctrl-C is the
+	// case it exists for: database/sql checks the context before it will hand
+	// out the connection, so a cancelled context means the UPDATE is never
+	// sent, the row stays 'running' forever, and the message says the job could
+	// not be closed — the one outcome a canceled job must not produce. The
+	// deadline keeps that from turning a wedged database into a hang.
+	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	defer cancelFinish()
+	if finishErr := jobs.Finish(finishCtx, s, job.ID, status, message); finishErr != nil {
 		if runErr != nil {
 			return health.ModelVersion, progress.Scored, fmt.Errorf("%w (and the job could not be closed: %v)", runErr, finishErr)
 		}

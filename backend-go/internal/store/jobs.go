@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Job is one analysis run's persisted state.
@@ -16,10 +19,11 @@ import (
 // the same database, and the two copies would then disagree about whether a
 // conversation was already being analyzed.
 //
-// The status values are not enumerated here: this package records whatever the
-// state machine in package jobs decides, and the legal edges live there. The
-// store's contribution is the guarded UPDATEs that make an illegal edge
-// impossible to write even if a caller asks for one.
+// The status values are enumerated here only as a vocabulary: jobStatuses is
+// the set of values the column may hold, so a caller that skips package jobs
+// cannot write "Done" or an empty string into it. Which of them may follow
+// which is still the state machine's decision in package jobs; the store's
+// contribution is the guarded UPDATEs that make an edge illegal to write.
 type Job struct {
 	ID           int64
 	Talker       string
@@ -38,6 +42,44 @@ type Job struct {
 // string a person may be shown there is no meaningful difference between NULL
 // and ”, and a forgotten .Valid check is how NULLs become empty output later.
 const jobColumns = `id, talker, kind, COALESCE(model_version, ''), status, total, done, COALESCE(error, ''), created_at, updated_at`
+
+// jobStatuses is every value analysis_jobs.status is allowed to hold: the six
+// states the state machine in package jobs names. It is a vocabulary, not an
+// edge list — the edges are the from arguments the caller supplies.
+//
+// It exists because the WHERE guard constrains the source state only. Without a
+// check on the target, a typo at a call site writes a status nothing can read
+// ("Done", "cancelled", or the empty string, which SQLite accepts happily), and
+// every later query silently stops matching the row.
+var jobStatuses = map[string]bool{
+	"queued":      true,
+	"running":     true,
+	"done":        true,
+	"failed":      true,
+	"canceled":    true,
+	"interrupted": true,
+}
+
+// IsUniqueViolation reports whether err is SQLite refusing a write because a
+// uniqueness constraint already holds — for this table, uq_jobs_active.
+//
+// The test is on the driver's result code, never on its message: modernc's
+// driver enables extended result codes on every connection, so a partial-index
+// conflict arrives as *sqlite.Error with Code() == SQLITE_CONSTRAINT_UNIQUE
+// (2067, the extended form of SQLITE_CONSTRAINT=19), and matching text would
+// break on any wording change as well as being fooled by a caller quoting it.
+//
+// Everything else — a full disk, an I/O error, a closed handle — is answered
+// false on purpose. A single-flight check that treats every failed insert as
+// "someone else is running" hides the real fault behind a job that does not
+// exist.
+func IsUniqueViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	return sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
+}
 
 // jobScanner is what both *sql.Row and *sql.Rows provide, so one scan helper
 // serves the single-row and the list-shaped reads.
@@ -159,9 +201,16 @@ UPDATE analysis_jobs
 // decides, and RowsAffected==0 means the move was not legal instead of meaning
 // "nothing to do".
 //
+// The target is checked against jobStatuses before the statement is built: the
+// WHERE clause cannot see it, so without that check the one thing this function
+// could still write is a status that does not exist.
+//
 // An empty errMsg stores NULL: a run that closed cleanly must not keep a
 // previous attempt's failure on record.
 func (s *Store) TransitionJob(ctx context.Context, id int64, from []string, to, errMsg string) (bool, error) {
+	if !jobStatuses[to] {
+		return false, fmt.Errorf("move job %d to %q: %q is not a status analysis_jobs may hold", id, to, to)
+	}
 	if len(from) == 0 {
 		return false, fmt.Errorf("move job %d to %q: no source status was given, so no row could ever match", id, to)
 	}
