@@ -15,9 +15,12 @@
 
 ## Decisions
 
-- **D1（不用 Gin）**：用标准库 `net/http` + Go 1.26 的 `ServeMux` 方法与路径模式（`GET /api/overview`、`DELETE /api/jobs/{id}`）。spec 写的是 Gin，但当前 `go.mod` 只有 `modernc.org/sqlite` 一个直接依赖，为实现路由引入框架没有收益；差异记录在「执行期偏离」。
+- **D1（用 Gin，按用户决定）**：`github.com/gin-gonic/gin`。`go.mod` 目前只有 `modernc.org/sqlite` 一个直接依赖，这是本仓库第一次引入 web 框架（`GOPROXY=https://goproxy.cn` 已验证可拉取）。
 - **D2（聚合来自 `report.Collect`）**：`GET /api/overview` 直接复用 `internal/report.Collect` 的 `View`，**不新建第二条指标派生路径**。M1 的教训是同一天被两条路径各算一次就必然分歧。
-- **D3（提交 `frontend/dist`）**：`go:embed` 需要构建期存在 dist，本仓库无 CI，故把 `dist` 入库（与 M1 已入库的 `echarts.min.js` 同一先例）。`npm run build` 后必须同步提交，README 写明。
+- **D3（dist 不入库，按用户决定）**：`frontend/dist` 与 `backend-go/internal/web/dist` 都进 `.gitignore`，仓库里**不含任何构建产物**。两种运行形态：
+  - **默认构建**（`go build ./cmd/server`）：运行期从磁盘读 dist，路径依次尝试 `$LOVER_FRONTEND_DIST` → 仓库内 `frontend/dist` → 二进制同级 `dist/`。找不到时 **不 panic**，返回一个说明「请先 `npm run build` 或设置 `LOVER_FRONTEND_DIST`」的纯文本页。
+  - **单文件构建**（`go build -tags embedded`）：用 `//go:embed all:dist` 把 `backend-go/internal/web/dist` 嵌进去。该目录由 Vite 的 `outDir` 直接产出（`vite build --outDir ../backend-go/internal/web/dist`），同样不入库。
+  - 后果：默认二进制**不是**单文件自包含的。spec 的「单二进制双击即用」只在 `-tags embedded` 下成立，README 要写清。前端源码与 dist 不会漂移——因为 dist 根本不进版本库。
 - **D4（URL 状态带 talker）**：`/?talker=<wxid>&view=sentiment` 按 spec 落地。这是**本地浏览器 URL**，不入日志、不出网；但要在 README 与 UI 里点明「书签会包含对方的 wxid」。
 - **D5（分析入口只有一种）**：Dashboard 的「开始分析」= `POST /api/jobs`，内部走与 CLI 相同的 `jobs.Start` + `analyze.RunSentimentProgress` + `jobs.Finish`；**不写第二套编排**。CLI 与 Dashboard 同时跑由单飞挡住。
 
@@ -53,10 +56,13 @@
 **TDD**：`ExternalRefs` 命中 → 500 且**不产生文件**；正常路径文件字节数等于响应里的 `bytes`。
 
 ### Task 5: 前端骨架与 URL 状态 [Tier: 2]
-**Files**：Create `frontend/{package.json,vite.config.ts,index.html,src/**}`、`backend-go/internal/api/static.go`（`go:embed ../../frontend/dist`）
+**Files**：Create `frontend/{package.json,vite.config.ts,index.html,src/**}`；Create `backend-go/internal/web/{static.go,static_disk.go,static_embedded.go}`（后两者用 build tag 互斥）
 - Vue3 + Vite + Element Plus + ECharts；`?talker=&view=` 双向绑定（刷新/书签/前进后退成立）。
+- Vite `build.outDir` = `../backend-go/internal/web/dist`（不入库）；dev 期用 Vite proxy 指向 `127.0.0.1:8787`。
+- `static_disk.go`（默认）：按 D3 的三个候选路径找 dist；找不到 → 说明性纯文本页（200，不是 panic/500）。
+- `static_embedded.go`（`//go:build embedded`）：`//go:embed all:dist`。
 - 视图：概览 / 情感 / 词云 / 情绪 / 任务。健康徽章常驻右上角。
-**TDD**（Go 侧）：dist 缺失时 `go build` 的明确错误处理；`GET /` 返回 index.html 且 `Content-Type` 正确；SPA 深链回退到 index.html。
+**TDD**（Go 侧）：dist 缺失时 `GET /` 返回说明页且**不 panic**；有 dist 时 index.html 与 `Content-Type` 正确；SPA 深链（`/anything`）回退 index.html；`-tags embedded` 构建在 dist 存在时能编译（无 dist 时不参与默认构建）。
 
 ### Task 6: 轮询、半成品门控与刷新恢复 [Tier: 3-Critical]
 - 任务进行中 2s 轮询；`done/total` 显示绝对值；**情感视图在未 done 时显示"分析中"占位，不画完整曲线**。
@@ -65,7 +71,8 @@
 **TDD**：半成品时 overview 的 `meta.partial=true` 且前端不渲染曲线（用 CDP 断言 canvas 未创建）。
 
 ### Task 7: M3 验收 [Tier: 3-Critical] [Mode: HITL]
-- `go test ./...` / `pytest` 全绿；`npm run build` 可重复（dist 无未提交差异）。
+- `go test ./...` / `pytest` 全绿；`git status` 里**没有任何 dist 产物**（`git check-ignore` 对 `frontend/dist`、`backend-go/internal/web/dist` 均命中）。
+- 无 dist 时 `go build ./...` 成功、服务器启动返回说明页；`npm run build` 后可正常出界面。
 - CDP 截图：概览、情感、任务进行中的门控、取消后的状态。
 - 断网（`--host-resolver-rules="MAP * ~NOTFOUND"`）下全部图表仍出图。
 - 隐私扫描：抓包/日志里 grep 不到 wxid、正文、昵称。
@@ -83,8 +90,9 @@
 
 | 风险 | 影响 | 缓解 |
 | --- | --- | --- |
-| `frontend/dist` 与源码漂移 | 单二进制跑的是旧界面 | README 写明 `npm run build` 后提交；Task 7 断言 dist 无未提交差异 |
+| 默认二进制不自包含（dist 不入库） | 换机器后界面缺失 | 启动时返回说明页而非白屏；README 写清 `-tags embedded` 的单文件形态 |
 | 浏览器缓存旧 dist | 改了看不到 | 静态资源文件名带内容哈希（Vite 默认），index.html 不缓存 |
+| 拉不到 Gin / 前端依赖 | 构建失败 | `GOPROXY=https://goproxy.cn` 已验证可拉 gin；若 npm 源不可用，前端任务阻塞但 Go 侧任务可独立验收 |
 | 半成品被画成完整曲线 | 误导（M1/M2 反复强调的失效形态） | Task 6 的 `meta.partial` + CDP 断言 |
 | 前后端同时跑分析 | 词频/打分重叠 | `uq_jobs_active` 单飞 + 409 |
 | 长任务期间占住唯一 DB 连接 | 接口全阻塞 | 复用 M2 的「块间不持连接」，worker 与 API 共用 store 但每块短事务 |
