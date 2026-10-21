@@ -201,3 +201,64 @@ def test_ensure_subcommand_prints_json(cache, registry, monkeypatch, capsys):
 
     assert payload["version"] == VERSION
     assert {file["name"]: file["sha256"] for file in payload["files"]} == TEST_SPEC.files
+
+
+def test_lexicon_probe_reports_success_with_the_dictionary_version(capsys):
+    """The zero-model promise, checked on a machine that never had a weight.
+
+    The polarity is asserted positive rather than merely present: a probe that
+    silently no-opped on empty input would also print `ok: true`, and only a sign
+    on a clearly happy sentence tells "scored" from "did nothing".
+    """
+    from app import sentiment_lexicon
+
+    code = model_cli.main(["lexicon-probe"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["ok"] is True
+    assert payload["needs_weights"] is False
+    assert payload["version"] == sentiment_lexicon.MODEL_VERSION
+    assert payload["polarity"] > 0, "今天特别开心 must score positive, not neutral"
+
+
+def test_lexicon_probe_never_touches_the_weight_download(capsys, monkeypatch):
+    """`ensure_model` replaced with a landmine: the probe must never step on it.
+
+    This is the whole read-only guarantee. If the probe ever routed through the
+    model branch it would call `ensure_model`, which downloads — and it would do
+    so on the path a person runs precisely because their cache is empty.
+    """
+
+    def explode(*args, **kwargs):
+        raise AssertionError("lexicon-probe must not depend on model weights")
+
+    monkeypatch.setattr(model_store, "ensure_model", explode)
+
+    code = model_cli.main(["lexicon-probe"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["ok"] is True
+
+
+def test_lexicon_probe_reports_failure_when_the_dictionary_raises(capsys, monkeypatch):
+    """A broken dictionary is `ok: false` and a non-zero exit, not a traceback.
+
+    The synthetic input is our own literal, so even in the failure path no chat
+    content can appear in the message — asserted, not merely intended.
+    """
+    import app.score as score_module
+
+    def explode(text):
+        raise RuntimeError("dictionary data missing")
+
+    monkeypatch.setattr(score_module, "score", explode)
+
+    code = model_cli.main(["lexicon-probe"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code != 0
+    assert payload["ok"] is False
+    assert "dictionary data missing" in payload["error"]
+    assert model_cli.PROBE_TEXT not in payload["error"]

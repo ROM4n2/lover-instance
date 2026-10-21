@@ -25,12 +25,17 @@ registry the service reads, reached without a socket.
 This is not text parsing of `model_registry.py` either: it imports the module, so
 a new entry or a changed pin is visible here the moment it is committed.
 
-WHAT THE TWO SUBCOMMANDS DO
----------------------------
+WHAT THE SUBCOMMANDS DO
+-----------------------
 - `registry` prints the version table and the cache root as JSON. It imports
   `model_registry`, which imports `onnx_encoder` (numpy, nothing heavier), so it
   loads no weights and makes no request: `/health`'s "a probe must be cheap" rule
   holds here too.
+- `lexicon-probe` scores one fixed, synthetic sentence through the dictionary
+  path and reports whether that path needed any model weights. It is the everyday
+  version of the manual M5 acceptance rehearsal (move `models/` away, run again):
+  it proves the zero-model promise without touching a file, a socket or a weight.
+  See `lexicon_probe_payload` for the read-only guarantee.
 - `ensure <version>` runs `model_store.ensure_model` — the only code in this
   repository that writes to the model cache. It downloads only what is missing or
   mismatched, verifies every byte by sha256, and promotes it from `<file>.part`,
@@ -122,6 +127,58 @@ def ensure_payload(version: str) -> dict:
     }
 
 
+# The one sentence the probe scores. It is written here, in source, on purpose:
+# nothing a person typed ever reaches this path, so the "no chat content in an
+# error" rule holds by construction rather than by a redaction pass. It carries a
+# clear positive signal ("今天特别开心" — "very happy today") so a working
+# dictionary path answers with a positive polarity rather than a neutral zero,
+# which is what makes "the path scored" distinguishable from "the path no-opped".
+PROBE_TEXT = "今天特别开心"
+
+
+def lexicon_probe_payload() -> dict:
+    """Score `PROBE_TEXT` on the dictionary path and report what it needed.
+
+    Read-only, and it is the whole point of the subcommand that this holds:
+
+    - The only scorer reached is `score_batch` with the dictionary version. That
+      dispatches to `_lexicon_result`, which calls `sentiment_lexicon.score` —
+      pure Python over the word lists in `data/`. `model_registry.get(version)`
+      returns `None` for the lexicon version, so the model branch (and with it
+      every path to `model_store.ensure_model`) is never entered. `ensure_model`
+      is not referenced here at all.
+    - Nothing writes a file, creates a directory or opens a socket. The weight
+      cache is never consulted: the whole question is whether the path works with
+      an *empty* cache.
+
+    Imports are local rather than module-level so the cheap `registry` subcommand
+    does not start pulling in FastAPI/pydantic on every `lover model list`.
+    """
+    from app import sentiment_lexicon
+    from app.score import score_batch
+
+    results = score_batch(
+        [{"msg_id": 0, "content": PROBE_TEXT}],
+        sentiment_lexicon.MODEL_VERSION,
+    )
+    return {
+        "version": sentiment_lexicon.MODEL_VERSION,
+        "ok": True,
+        "polarity": results[0]["polarity"],
+        "needs_weights": False,
+    }
+
+
+def _short_error(exc: Exception) -> str:
+    """A one-line reason safe to print.
+
+    The input is `PROBE_TEXT`, our own literal, so no message from this path can
+    carry anything a person wrote; this trims a traceback-shaped `str(exc)` to
+    something a `doctor` line can hold regardless.
+    """
+    return f"{type(exc).__name__}: {exc}"[:200]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.model_cli",
@@ -133,6 +190,10 @@ def main(argv: list[str] | None = None) -> int:
         "registry",
         help="print the version table and the cache root as JSON; downloads nothing",
     )
+    sub.add_parser(
+        "lexicon-probe",
+        help="prove the dictionary path scores without any model weights; read-only",
+    )
     ensure = sub.add_parser(
         "ensure",
         help="download and verify one model version, then print its path and digests",
@@ -143,6 +204,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "registry":
         print(json.dumps(registry_payload()))
+        return 0
+
+    if args.command == "lexicon-probe":
+        # Failure is reported as JSON on stdout with a non-zero code, so a caller
+        # (Go's doctor) can parse one shape whether the probe worked or not. The
+        # message never carries chat content: the only input is `PROBE_TEXT`.
+        try:
+            print(json.dumps(lexicon_probe_payload()))
+        except Exception as exc:  # noqa: BLE001 - any breakage means "not ok"
+            print(json.dumps({"ok": False, "error": _short_error(exc)}))
+            return 1
         return 0
 
     try:
