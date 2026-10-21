@@ -32,7 +32,14 @@ SECRET_RE = re.compile(
     r"(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}['\"]", re.I)
 # 测试哨兵（SENTINEL_… / EXAMPLE_… / DUMMY…）是断言用的假值，不是密钥。
 SENTINEL_RE = re.compile(r"SENTINEL|EXAMPLE|DUMMY|FAKE|PLACEHOLDER|REDACTED", re.I)
-FORBIDDEN = ("（方法细节见本地私有文档）", "已验证", "主密钥", "密钥的内存策略变更")
+# 词表由片段拼成：检查器自己若直接写出这些字面量，公开树里就会「含有」它要避免的
+# 措辞——自己举报自己没意义，却让发布出去的仓库多了这些字符串。
+FORBIDDEN = tuple(a + b for a, b in (
+    ("被动", "内存扫描"),
+    ("取得并", "验证"),
+    ("32 字节", "主密钥"),
+    ("密钥", "移出内存"),
+))
 
 
 def git(*a):
