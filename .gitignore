@@ -82,3 +82,16 @@ Thumbs.db
 
 # === vault-exec 执行状态（本地断点文件，非交付物） ===
 .vault-exec-ledger.json
+
+# === 不随公开仓库分发的本地文件 ===
+# 多 Agent 入口文件指向本机的知识库，对外部读者无意义且泄露本地路径。
+AGENTS.md
+CLAUDE.md
+.cursorrules
+.agent-rules.md
+
+# 工作记忆账簿：项目内部推演与验收记录，含本机路径与流程细节。
+WORKMEMORY/
+
+# 取钥过程与 sidecar 能力细节：依据 ADR-0001 与 spec 合规铁律，不公开分发。
+docs/private/

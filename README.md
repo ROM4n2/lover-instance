@@ -33,6 +33,31 @@
 
 设计与决策见 [docs/specs/](docs/specs/) 与 [docs/adr/](docs/adr/)；每个里程碑的实施计划与「执行期偏离」表见 [docs/plans/](docs/plans/)（M1–M5）。验收记录（不入库）在 `workmem/evidence/M*-ACCEPTANCE.md`。
 
+## 数据与隐私边界（发布前请读这一节）
+
+这个项目处理的是**两个人的私人聊天记录**，所以边界写在最前面：
+
+- **仓库里没有任何聊天内容、密钥、数据库或模型权重。** 真实数据只落在你的本机
+  `%LOCALAPPDATA%\lover-instance\`；测试全部使用 `fixtures/` 里的**合成语料**。
+- **仓库不内置、不分发任何解密或密钥提取代码**（见 [ADR-0001](docs/adr/ADR-0001-data-access-contract.md)）。
+  数据由你自装的第三方工具导出为 JSON，本项目只消费该文件。
+- **仓库不含**：本机知识库联动的多 Agent 入口文件（`AGENTS.md` / `CLAUDE.md` / `.cursorrules` /
+  `.agent-rules.md`）、内部工作记忆账簿（`WORKMEMORY/`）、以及取钥过程细节（`docs/private/`）。
+- **`report.html` 是分享物**：它含对方的聊天内容（词云、情绪、曲线、必要时的叙述段）。
+  **分享前请先征得对方同意**；情感结论是描述性统计，不是关系判断。
+- 完整声明见 [DISCLAIMER.md](DISCLAIMER.md) 与 [LICENSE](LICENSE)。
+
+**发布前自检**（把上面的边界变成可重复执行的断言，而不是靠人记得）：
+
+```bash
+python scripts/release-audit.py
+```
+
+它会检查：索引与**历史**里有没有数据文件、本机目录是否被跟踪、有没有本机绝对路径、
+有没有疑似密钥、公开树里有没有取钥方法的措辞，以及 LICENSE / DISCLAIMER / README 隐私小节是否齐备。
+**注意：它检查的是当前索引与历史里的文件；若要彻底抹掉历史中的敏感段落，需要另做
+历史重写（见发布说明）。**
+
 ## 快速开始（四条命令）
 
 > **前置**：Go 1.26（`backend-go/go.mod`）与 Python 3.11+（`nlp-service`；可用 `LOVER_PYTHON` 指定解释器）。
