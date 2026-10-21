@@ -29,8 +29,9 @@
 | M2 | analysis_jobs 状态机 + 块级批处理 + 模型情感（ONNX，与词典版共存可比） | ✅ 完成（真实数据三版共存、kill 后续跑、两版对照区） |
 | M3 | Vue3 Dashboard（Gin + go:embed、健康徽章、进度轮询、半成品门控） | ✅ 完成（CDP 真机核验、断网出图、日志不含会话键） |
 | M4 | 本地 Ollama 叙事 + 话题词云时间线 | ✅ 完成（叙事 4 秒、月度词云需显式重扫；模型需自行指定） |
+| M5 | 一键化：四条命令 + 模型清单 + 五类失败退出码 | ✅ 完成（零模型开箱已物理演练、取消无孤儿、`lover dash` 真机验证） |
 
-设计与决策见 [docs/specs/](docs/specs/) 与 [docs/adr/](docs/adr/)；M1 的实施计划与执行期偏离见 [docs/plans/M1-mvp-report-implementation-plan.md](docs/plans/M1-mvp-report-implementation-plan.md)。
+设计与决策见 [docs/specs/](docs/specs/) 与 [docs/adr/](docs/adr/)；每个里程碑的实施计划与「执行期偏离」表见 [docs/plans/](docs/plans/)（M1–M5）。验收记录（不入库）在 `workmem/evidence/M*-ACCEPTANCE.md`。
 
 ## 快速开始（四条命令）
 

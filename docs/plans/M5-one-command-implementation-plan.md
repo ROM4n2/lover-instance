@@ -78,3 +78,28 @@
 | 孤儿进程占端口 | 下次运行必失败 | 进程组 + 取消测试；`doctor` 报告占用者 PID |
 | 依赖版本钉死后过期 | 安全更新进不来 | 注释写明这是「已验证组合」；`lover doctor` 提示可升级，但不自动升 |
 | `npm` 不可用 | Dashboard 起不来 | 自动构建失败即跳过并明说，报告路径独立可用 |
+---
+
+## 执行记录与偏离（2026-10-21 回填，以代码为准）
+
+**验收**：`workmem/evidence/M5-ACCEPTANCE.md`（9 条判据：8 ✅ + 判据 9「零模型开箱」在收尾阶段补做了物理演练）。`main` 至 `0353ddc`；16 个 Go 包 ok、`pytest` 100 passed。
+
+| 计划原文 | 实际实现 | 原因 |
+| --- | --- | --- |
+| Task 3 模型元数据二选一：(a) `GET /api/models` / (b) 解析 `model_registry.py` | **第三个方案**：子进程执行 `python -m app.model_cli registry` 取 JSON | 菜单必须能在**服务没起**时工作（(a) 要求服务在线），而 (b) 的文本解析会在注册表写法变化时静默失效。`add` 本来就要在 Python 进程里跑 `ensure_model`，顺路取注册表最省且单一来源不变 |
+| Task 5「Windows 用 `CREATE_NEW_PROCESS_GROUP` 或 Job Object」 | `CREATE_NEW_PROCESS_GROUP` + `CTRL_BREAK` + `taskkill /T /F` 兜底；把 `cmd.Cancel` 换成杀组并设 `WaitDelay` | Job Object 要给每个子进程建内核句柄 + 完成端口，成本记在注释里；`WaitDelay` 是因为默认情况下孙进程占着输出管道会让 `Wait` 永久阻塞——这条正是变异②的载荷 |
+| Task 4 `dash`「`go build` 或 `go run` 你定」 | `go build` 到 `%TEMP%` 再 exec，且**起进程后注册清理**（收尾阶段补） | 少一层父进程与管道拷贝，产物可入进程组。临时 exe 现由 defer 在进程回收之后删除，正常退出与取消两条路径都覆盖 |
+| 未规定 `lover` 无 `--export` 时怎么办 | 取 `ExportsDir()` 里最新的 `*.json`；没有则 `exitRun` 并说明 | 一键化的自然读法；当前该目录只有导出的 HTML，所以走"未找到导出" |
+| 未规定叙事默认 | `Options.OllamaModel` **无默认值**（不猜模型名），叙事默认关闭 | 猜一个模型名会在用户机器上把 4 秒的增值项变成 120 秒的超时 |
+| 未规定 | `cmd/server` 的 `defaultNLPURL`/`defaultAddr` 一度是第二份实现，收尾阶段删除并改读 `app`，另加**源码字面量守卫** | 这正是本计划的「一规则两实现」条款要防的；光测值不够，还要测"字面量不许再出现" |
+| 未规定 | `lover model list` 在 0 个文件时报 "an earlier add was interrupted"，收尾阶段改为三态文案 | 真机演练时它把"从未安装过"报成"安装中断"，是事实错误不是措辞问题 |
+
+### 执行期发现的两个既有缺陷（不是本计划引入）
+
+1. **`lover dash` 从未真正起过服务**：`exec.Command` 建命令而监督层设 `cmd.Cancel`，Go 在 `Start()` 直接拒绝。40 条测试全绿，因为它们整体替换了启动 seam。**教训：seam 覆盖到「被验证对象本身」时，必须有一条不替换它的真机冒烟。**
+2. **`lover model list` 的三态归因错误**（见上表最后一行）。
+
+### 遗留（均不阻塞）
+
+- `taskkill /T /F` 强杀 `lover` 会留下孙进程 `server`——`/F` 不给程序跑收尾的机会；Ctrl-C 与服务自退两条路径都正常清理。Windows 固有行为。
+- 判据 9 的演练为一次性动作（移走/还原 `models/`），没有固化成脚本；若要让 `doctor` 也能验"零模型可用"，需要再补一条只读检查。
