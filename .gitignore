@@ -69,8 +69,10 @@ vendor/
 # 忽略掉——新增文件从此不出现在 git status 里，那比漏ignore两个二进制糟得多。
 /analyze
 /server
+/lover
 /backend-go/analyze
 /backend-go/server
+/backend-go/lover
 
 # === IDE / OS ===
 .idea/
