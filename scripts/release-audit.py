@@ -21,8 +21,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SUFFIXES = (".jsonl", ".db", ".sqlite", ".sqlite3", ".csv", ".tsv", ".parquet")
 NAME_HINTS = ("wechat_messages", "eval_set", "data.db", "messages.json")
 LOCAL_DIRS = ("workmem", "WORKMEMORY", "docs/private", "node_modules", "dist")
+# 知识库的名字也由片段拼成：公开树里出现它，等于告诉别人作者的本地工作流。
+VAULT_MARK = "Obsi" + "dian"
 ABS_PATTERNS = [re.compile(p, re.I) for p in (
-    r"[A-Za-z]:\\Vault", r"/Users/[A-Za-z0-9_.-]+/")]
+    r"[A-Za-z]:" + re.escape("\\") + VAULT_MARK, r"/Users/[A-Za-z0-9_.-]+/")]
 # C:\Users\<name>\ 只在 <name> 不是占位名时才算泄漏——测试夹具里的
 # `C:\Users\someone\...` 是**虚构路径**，不是本机身份。
 ABS_USER_RE = re.compile(r"C:\\Users\\([^\\\"'`\s]+)", re.I)
@@ -39,6 +41,7 @@ FORBIDDEN = tuple(a + b for a, b in (
     ("取得并", "验证"),
     ("32 字节", "主密钥"),
     ("密钥", "移出内存"),
+    ("4.1.10", ".31"),
 ))
 
 

@@ -181,7 +181,7 @@ func TestProbeHTTP_SidecarErrorPayloadsClassifyToSemanticStates(t *testing.T) {
 	}{
 		{"wechat not running", `{"success":false,"error":"WeChat is not running, please start WeChat"}`, StateWeChatNotRunning},
 		{"key unavailable", `{"success":false,"error":"failed to get decryption key from memory"}`, StateKeyUnavailable},
-		{"version unsupported", `{"success":false,"error":"unsupported WeChat version 4.1.10.x"}`, StateVersionUnsupported},
+		{"version unsupported", `{"success":false,"error":"unsupported WeChat version 9.9.9.9"}`, StateVersionUnsupported},
 		{"unmapped failure falls back to schema incompatible", `{"success":false,"error":"totally unknown failure"}`, StateSchemaIncompatible},
 		{"recognized session key without success flag", `{"session":"abc123"}`, StateOK},
 		{"empty object is not a verifiable session", `{}`, StateSchemaIncompatible},
@@ -412,15 +412,15 @@ func TestWeChatVersionExe_StubbedPowerShellReadsVersion(t *testing.T) {
 	var gotScript string
 	runVersionCmd = func(ctx context.Context, script string) ([]byte, error) {
 		gotScript = script
-		return []byte("4.1.9.30\r\n"), nil
+		return []byte("9.9.9.9\r\n"), nil
 	}
 
 	version, err := WeChatVersionExe(`C:\Program Files\Tencent\WeChat\WeChat.exe`)
 	if err != nil {
 		t.Fatalf("WeChatVersionExe error: %v", err)
 	}
-	if version != "4.1.9.30" {
-		t.Errorf("version = %q, want %q", version, "4.1.9.30")
+	if version != "9.9.9.9" {
+		t.Errorf("version = %q, want %q", version, "9.9.9.9")
 	}
 	if !strings.Contains(gotScript, `C:\Program Files\Tencent\WeChat\WeChat.exe`) {
 		t.Errorf("script = %q, want the exe path in the VersionInfo query", gotScript)
@@ -486,7 +486,7 @@ func TestWeChatVersionExe_HungPowerShellBoundedByDeadline(t *testing.T) {
 		gotDeadline, gotDeadlineOK = ctx.Deadline()
 		select {
 		case <-time.After(5 * time.Second): // hung shell: far longer than the 1s deadline
-			return []byte("4.1.9.30"), nil
+			return []byte("9.9.9.9"), nil
 		case <-ctx.Done(): // what exec.CommandContext does: killed at the deadline
 			return nil, ctx.Err()
 		}

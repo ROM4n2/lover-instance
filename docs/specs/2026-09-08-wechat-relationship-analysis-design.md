@@ -10,7 +10,7 @@
 
 - 架构：Go(Gin) 网关/编排 + Python(FastAPI) 无状态 NLP + Vue3 Dashboard + 本地 Ollama 叙事。
 - 情感引擎：本地 SKEP/chinese-RoBERTa 为主力（M2），DUTIR+HowNet 词典法为基线（M1，零下载秒级）。
-- 微信版本：Windows 微信 **4.1.9.30**（< 硬断点 4.1.10.x，被动扫描大概率可行，M0 实测）。
+- 微信版本：Windows 微信 **4.1.9.30**（M0 实测通过的版本；版本适用性由 sidecar 侧维护，本项目不记录断点）。
 - 叙事 LLM：本地 Ollama（OpenAI 兼容接口）；**云 API 模式 deny-by-default**。
 - **里程碑价值先行**：M1 就产出可分享的自包含 HTML 报告；Go/Vue/重型模型在外围增强（见里程碑）。
 - **情感结论诚实化**：关系类指标全部标注"会误判反话/爱称，非心理诊断"，报告内置免责面板。

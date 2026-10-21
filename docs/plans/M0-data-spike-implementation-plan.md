@@ -158,7 +158,7 @@ M0 不可全自动：装 sidecar、跑微信登录态、被动取密钥均需用
 **目标**: 选定并安装 sidecar 到宿主机（chatlog 续作 `myysophia/wechat-log` 优先，Windows 预编译版）。
 **步骤:**
 - [ ] 从 wechat-log Releases 下载 Windows 版（或 `go install`，需 CGO + MinGW 编译器——**建议直接下预编译**）。
-- [ ] 关闭微信自动更新（设置→通用→升级：手动），避免跨 4.1.10.x 断点。
+- [ ] 关闭微信自动更新（设置→通用→升级：手动），避免版本漂移带来的断点（断点由 sidecar 侧维护）。
 - [ ] 微信**保持登录态**，运行 `chatlog` → TUI 选"解密数据"→观察被动取密钥是否成功。
 - [ ] 成功则开 HTTP 服务（:5030）；失败则记录错误输出（交给 Task 5 决策树）。
 - [ ] 验证：`curl http://127.0.0.1:5030/api/v1/session` 返回非空 session 列表。

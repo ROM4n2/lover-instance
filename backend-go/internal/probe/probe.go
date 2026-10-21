@@ -51,7 +51,7 @@ func (s State) Hint() string {
 	case StateWeChatNotRunning:
 		return "sidecar 在线但微信未运行：请启动微信并完成登录后重试"
 	case StateKeyUnavailable:
-		return "微信在跑但密钥取不到：微信 4.1.10.x+ 已把密钥移出明文内存，请核对 sidecar 与微信版本兼容清单，或回退到已验证版本"
+		return "微信在跑但 sidecar 拿不到密钥：请对照 sidecar 侧的微信版本兼容清单核对组合，或回退到已验证的版本组合（具体版本边界由 sidecar 维护，本项目不记录）"
 	case StateVersionUnsupported:
 		return "微信版本不受支持：对照已验证 sidecar 版本清单升级 sidecar 或固定微信版本，并关闭微信自动更新"
 	case StateSchemaIncompatible:
