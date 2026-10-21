@@ -18,12 +18,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"lover-instance/backend-go/internal/app"
 )
@@ -41,6 +43,14 @@ var dependencyModules = []string{"fastapi", "uvicorn", "jieba", "onnxruntime", "
 // imported inside Encoder.from_model_dir — so a menu must not refuse to print
 // because of a model this machine was never asked to load.
 var registryModules = []string{"numpy"}
+
+// lexiconProbeTimeout bounds the zero-model probe. The first call into the
+// dictionary path builds jieba's cache, which is a second or two on a cold disk;
+// 20s is generous for that and still short enough that a wedged interpreter is
+// reported rather than waited on. It is a variable, but never zero: a zero
+// deadline would cancel the child before it started and turn a working path into
+// a permanent problem.
+var lexiconProbeTimeout = 20 * time.Second
 
 // installHint is the one command that installs everything a run needs. It names
 // the pinned file rather than a list of packages, so the versions the service
@@ -204,9 +214,30 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintf(stdout, "models: %v\n", err)
 	} else {
 		fmt.Fprintf(stdout, "models: cache at %s\n", reg.CacheRoot)
+		anyFiles := false
 		for _, status := range modelStatuses(reg, reg.CacheRoot) {
 			fmt.Fprintf(stdout, "  %-28s %s%s\n", status.entry.Version, status.state(), status.detail())
+			if status.anyFilePresent() {
+				anyFiles = true
+			}
 		}
+		if !anyFiles {
+			// An empty cache is the shipping default, not a failure. Saying so is
+			// the point: a person who deleted the directory to reclaim disk should
+			// not read a bare model listing as "something is missing".
+			fmt.Fprintf(stdout, "no models installed: that is the supported default, not a problem\n")
+		}
+	}
+
+	// The zero-model check: prove the dictionary path scores with no weights on
+	// disk. This deliberately runs even when the model block above reported an
+	// empty cache — that is the situation it exists for. A failure is a real
+	// problem, and one no download can rescue, so the message says exactly that.
+	if probe, err := probeLexicon(ctx, cfg.python, serviceDir); err != nil {
+		problems++
+		fmt.Fprintf(stdout, "lexicon path is broken: %v; this is the zero-model path, so no model can rescue it\n", err)
+	} else {
+		fmt.Fprintf(stdout, "lexicon path: works without any model weights (version=%s, sample polarity=%+.3f)\n", probe.Version, probe.Polarity)
 	}
 
 	if problems == 0 {
@@ -235,4 +266,52 @@ func probeRegistryImports(ctx context.Context, python, serviceDir string) error 
 		return fmt.Errorf("cannot read the model registry: %s is missing (%s)", strings.Join(missing, ", "), installHint(python))
 	}
 	return nil
+}
+
+// lexiconProbe is what `python -m app.model_cli lexicon-probe` prints: one line
+// of JSON. On success `ok` is true and `polarity` is the sample sentence's
+// score; on failure `ok` is false and `error` carries a short reason.
+type lexiconProbe struct {
+	Version      string  `json:"version"`
+	OK           bool    `json:"ok"`
+	Polarity     float64 `json:"polarity"`
+	NeedsWeights bool    `json:"needs_weights"`
+	Error        string  `json:"error"`
+}
+
+// probeLexicon is the seam a test replaces with a canned success, failure and
+// timeout, so doctor's reporting is checked without an interpreter or a jieba
+// load.
+var probeLexicon = defaultProbeLexicon
+
+// defaultProbeLexicon runs the service's own probe in a bounded subprocess. It
+// is read-only: the subcommand scores a sentence the Python side wrote itself
+// and downloads nothing, so this can run with an empty cache — which is the case
+// it exists to prove still works.
+func defaultProbeLexicon(ctx context.Context, python, serviceDir string) (lexiconProbe, error) {
+	ctx, cancel := context.WithTimeout(ctx, lexiconProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, "-m", "app.model_cli", "lexicon-probe")
+	cmd.Dir = serviceDir
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return lexiconProbe{}, fmt.Errorf("the lexicon probe did not answer within %s", lexiconProbeTimeout)
+		}
+		return lexiconProbe{}, fmt.Errorf("could not run the lexicon probe with %s (%v): %s", python, err, strings.TrimSpace(stderr.String()))
+	}
+	var probe lexiconProbe
+	if err := json.Unmarshal(out, &probe); err != nil {
+		return lexiconProbe{}, fmt.Errorf("the lexicon probe output is not JSON (%v)", err)
+	}
+	if !probe.OK {
+		reason := probe.Error
+		if reason == "" {
+			reason = "no reason given"
+		}
+		return lexiconProbe{}, errors.New(reason)
+	}
+	return probe, nil
 }
