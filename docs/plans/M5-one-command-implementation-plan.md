@@ -102,4 +102,4 @@
 ### 遗留（均不阻塞）
 
 - `taskkill /T /F` 强杀 `lover` 会留下孙进程 `server`——`/F` 不给程序跑收尾的机会；Ctrl-C 与服务自退两条路径都正常清理。Windows 固有行为。
-- 判据 9 的演练为一次性动作（移走/还原 `models/`），没有固化成脚本；若要让 `doctor` 也能验"零模型可用"，需要再补一条只读检查。
+- ~~判据 9 的演练为一次性动作~~ → **已固化为 `lover doctor` 的只读检查**（`95705a8` / `3f6dc00`）：`python -m app.model_cli lexicon-probe` 用一句写死的合成文本走词典分支，输出 `{"ok":true,"needs_weights":false,...}`；doctor 打印 `lexicon path: works without any model weights`，模型目录为空时额外说明 `no models installed: that is the supported default, not a problem`。**不下载、不建目录、不联网**（`ensure_model` 有一条「一调就 raise」的替身测试把守）。
