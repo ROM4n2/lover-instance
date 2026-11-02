@@ -103,9 +103,10 @@ func Usagef(format string, args ...any) error {
 // the next entry point fills in directly. Every default in it comes from
 // paths.go via DefaultOptions, so no entry point holds a second copy of one.
 type Options struct {
-	ExportPath string
-	Talker     string
-	DBPath     string
+	ExportPath   string
+	ExportReader io.Reader
+	Talker       string
+	DBPath       string
 	OutPath    string
 	NLPURL     string
 
@@ -140,7 +141,7 @@ type Options struct {
 func DefaultOptions() Options {
 	return Options{
 		DBPath:    DefaultDBPath(),
-		OutPath:   "report.html",
+		OutPath:   DefaultReportPath(),
 		NLPURL:    DefaultNLPURL(),
 		OllamaURL: DefaultOllamaURL(),
 	}
@@ -284,6 +285,10 @@ func execute(ctx context.Context, cfg Options, stderr io.Writer) (outcome, error
 	if err := s.RebuildBehaviorMetrics(ctx, talker); err != nil {
 		return outcome{}, err
 	}
+	ha := &analyze.HighlightsAnalyzer{}
+	if err := ha.Run(ctx, s, analyze.Options{Talker: talker}, nil); err != nil {
+		return outcome{}, err
+	}
 	behaviorMs := time.Since(at).Milliseconds()
 
 	at = time.Now()
@@ -353,13 +358,19 @@ func openStore(ctx context.Context, path string) (*store.Store, error) {
 }
 
 func importExport(ctx context.Context, s *store.Store, cfg Options) (ingest.Report, error) {
-	file, err := os.Open(cfg.ExportPath)
-	if err != nil {
-		return ingest.Report{}, fmt.Errorf("open export: %w", err)
+	var reader io.Reader
+	if cfg.ExportReader != nil {
+		reader = cfg.ExportReader
+	} else {
+		file, err := os.Open(cfg.ExportPath)
+		if err != nil {
+			return ingest.Report{}, fmt.Errorf("open export: %w", err)
+		}
+		defer func() { _ = file.Close() }()
+		reader = file
 	}
-	defer func() { _ = file.Close() }()
 
-	imported, err := ingest.Run(ctx, s, ingest.Options{Source: sourceName, Talker: cfg.Talker, Reader: file})
+	imported, err := ingest.Run(ctx, s, ingest.Options{Source: sourceName, Talker: cfg.Talker, Reader: reader})
 	if err != nil {
 		return ingest.Report{}, err
 	}

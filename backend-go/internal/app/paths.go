@@ -46,6 +46,12 @@ func DefaultOllamaURL() string { return "http://127.0.0.1:11434" }
 // control.
 func DefaultDashboardAddr() string { return "127.0.0.1:8787" }
 
+// DefaultReportPath is the default filename for the HTML report.
+func DefaultReportPath() string { return "report.html" }
+
+// DefaultDemoReportPath is the default filename for the demo report.
+func DefaultDemoReportPath() string { return "demo_report.html" }
+
 // NarrativeCacheDir is where narrations are remembered. It sits beside the
 // database under LOCALAPPDATA, which is not synced by default, because a cached
 // paragraph describes the conversation.
