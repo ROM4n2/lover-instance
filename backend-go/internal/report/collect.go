@@ -80,6 +80,11 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 		return View{}, err
 	}
 
+	highlights, err := CollectHighlights(ctx, s, talker)
+	if err != nil {
+		return View{}, err
+	}
+
 	view := View{
 		Meta: MetaView{
 			TalkerHash:            TalkerHash(talker),
@@ -101,6 +106,7 @@ func Collect(ctx context.Context, s *store.Store, talker, behaviorModelVersion, 
 		EmotionSource: emotionSource,
 		Disclaimer:    DisclaimerText,
 		Monthly:       monthly,
+		Highlights:    highlights,
 	}
 
 	// The narration runs last and its failure is never returned. The report is
@@ -585,4 +591,46 @@ func trendView(points []store.TrendPoint) TrendView {
 	}
 	view.Axis = math.Ceil(math.Max(reach, minAxisSpan)*100) / 100
 	return view
+}
+
+// CollectHighlights reads the stored highlights for talker and maps them into a HighlightsView.
+func CollectHighlights(ctx context.Context, s *store.Store, talker string) (HighlightsView, error) {
+	events, err := s.GetHighlights(ctx, talker)
+	if err != nil {
+		return HighlightsView{}, fmt.Errorf("report highlights: %w", err)
+	}
+	if len(events) == 0 {
+		return HighlightsView{Present: false}, nil
+	}
+
+	view := HighlightsView{
+		Present: true,
+	}
+
+	for _, e := range events {
+		mv := MilestoneView{
+			Kind:        e.Kind,
+			Date:        e.EventDate,
+			Title:       e.Title,
+			Description: e.Description,
+			MetricValue: e.MetricValue,
+		}
+		view.Events = append(view.Events, mv)
+
+		switch e.Kind {
+		case "origin":
+			view.StartDate = e.EventDate
+			view.JourneyDays = int(e.MetricValue)
+		case "streak":
+			view.MaxStreakDays = int(e.MetricValue)
+			view.StreakPeriod = e.EventDate
+		case "peak_day":
+			mv.Metric = fmt.Sprintf("%d 条", int(e.MetricValue))
+			view.PeakDays = append(view.PeakDays, mv)
+		case "late_night":
+			mv.Metric = fmt.Sprintf("凌晨 %d 条", int(e.MetricValue))
+			view.LateNights = append(view.LateNights, mv)
+		}
+	}
+	return view, nil
 }

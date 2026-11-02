@@ -230,6 +230,32 @@ type View struct {
 	// template then explains that a rescan is needed rather than drawing a
 	// blank chart that reads as "no words that month".
 	Monthly []MonthView
+
+	// Highlights contains relationship milestones: journey start, streaks, peak days, and late nights.
+	Highlights HighlightsView
+}
+
+// MilestoneView represents one key milestone or highlight moment.
+type MilestoneView struct {
+	Kind        string  `json:"kind"`
+	Date        string  `json:"date"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Metric      string  `json:"metric"`
+	MetricValue float64 `json:"metric_value"`
+}
+
+// HighlightsView groups milestone moments discovered in the conversation.
+type HighlightsView struct {
+	Present       bool            `json:"present"`
+	JourneyDays   int             `json:"journey_days"`
+	StartDate     string          `json:"start_date"`
+	EndDate       string          `json:"end_date"`
+	MaxStreakDays int             `json:"max_streak_days"`
+	StreakPeriod  string          `json:"streak_period"`
+	PeakDays      []MilestoneView `json:"peak_days"`
+	LateNights    []MilestoneView `json:"late_nights"`
+	Events        []MilestoneView `json:"events"`
 }
 
 // DisclaimerText is fixed. It is a constant rather than a field a caller fills

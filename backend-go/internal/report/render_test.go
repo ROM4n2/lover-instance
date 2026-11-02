@@ -249,3 +249,34 @@ func TestDurationAndPercentFormatting(t *testing.T) {
 		t.Errorf("dateOf(0) = %q, want a dash rather than 1970", got)
 	}
 }
+
+func TestRender_HighlightsSection(t *testing.T) {
+	s := newStore(t)
+	seedConversation(t, s)
+	v := collect(t, s)
+	v.Highlights = HighlightsView{
+		Present:       true,
+		StartDate:     "2024-01-01",
+		JourneyDays:   120,
+		MaxStreakDays: 35,
+		StreakPeriod:  "2024-02-01~2024-03-07",
+		Events: []MilestoneView{
+			{
+				Kind:        "origin",
+				Date:        "2024-01-01",
+				Title:       "启程之日：初次相遇",
+				Description: "从 2024-01-01 留下第一条记录起，携手走过 120 天",
+			},
+		},
+	}
+	html := render(t, v)
+	if !strings.Contains(html, "关系高光与里程碑") {
+		t.Error("rendered HTML missing highlights section heading")
+	}
+	if !strings.Contains(html, "启程之日：初次相遇") {
+		t.Error("rendered HTML missing milestone title")
+	}
+	if refs := ExternalRefs([]byte(html)); len(refs) > 0 {
+		t.Errorf("expected zero external refs, got %v", refs)
+	}
+}
