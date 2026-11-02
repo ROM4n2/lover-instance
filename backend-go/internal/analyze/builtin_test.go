@@ -19,15 +19,16 @@ func TestDefaultRegistry_Plan(t *testing.T) {
 		t.Fatalf("unexpected error planning default registry: %v", err)
 	}
 
-	if len(plan) != 2 {
-		t.Fatalf("expected 2 analyzers, got %d", len(plan))
+	if len(plan) != 3 {
+		t.Fatalf("expected 3 analyzers, got %d", len(plan))
 	}
 
 	if plan[0].ID() != "behavior" {
 		t.Errorf("step 0: expected behavior, got %s", plan[0].ID())
 	}
-	if plan[1].ID() != "sentiment" {
-		t.Errorf("step 1: expected sentiment, got %s", plan[1].ID())
+	ids := map[string]bool{plan[1].ID(): true, plan[2].ID(): true}
+	if !ids["sentiment"] || !ids["highlights"] {
+		t.Errorf("expected sentiment and highlights in plan, got %s and %s", plan[1].ID(), plan[2].ID())
 	}
 }
 
@@ -37,8 +38,8 @@ func TestDefaultRegistry_WithoutClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(plan) != 1 {
-		t.Fatalf("expected 1 analyzer without client, got %d", len(plan))
+	if len(plan) != 2 {
+		t.Fatalf("expected 2 analyzers without client, got %d", len(plan))
 	}
 	if plan[0].ID() != "behavior" {
 		t.Errorf("expected behavior, got %s", plan[0].ID())

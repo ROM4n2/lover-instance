@@ -45,6 +45,7 @@ func (sa *SentimentAnalyzer) Run(ctx context.Context, s *store.Store, opts Optio
 func DefaultRegistry(c *nlp.Client) *Registry {
 	r := NewRegistry()
 	_ = r.Register(&BehaviorAnalyzer{})
+	_ = r.Register(&HighlightsAnalyzer{})
 	if c != nil {
 		_ = r.Register(&SentimentAnalyzer{Client: c})
 	}

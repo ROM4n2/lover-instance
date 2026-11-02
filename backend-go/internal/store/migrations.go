@@ -106,6 +106,20 @@ CREATE TABLE IF NOT EXISTS ingest_state (
   last_ts INTEGER, last_msg_id TEXT, updated_at TEXT,
   PRIMARY KEY(source, talker)
 );
+
+CREATE TABLE IF NOT EXISTS highlights (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  talker TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  event_date TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  metric_value REAL NOT NULL,
+  extra_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(talker, kind, event_date)
+);
+CREATE INDEX IF NOT EXISTS idx_highlights_talker_kind ON highlights(talker, kind);
 `
 
 // tables is the set Migrate is expected to create. It exists so a test can
@@ -121,6 +135,7 @@ var tables = []string{
 	"word_freq_v2",
 	"analysis_jobs",
 	"ingest_state",
+	"highlights",
 }
 
 // Migrate creates every table and index, then carries the legacy word counts
