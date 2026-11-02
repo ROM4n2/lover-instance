@@ -106,6 +106,9 @@ func New(opts Options) *gin.Engine {
 	apiGroup.GET("/jobs/:id", jobStatusHandler(opts))
 	apiGroup.DELETE("/jobs/:id", jobCancelHandler(opts))
 	apiGroup.POST("/export", exportHandler(opts))
+	apiGroup.POST("/demo", demoHandler(opts))
+	apiGroup.POST("/import", importHandler(opts))
+	apiGroup.GET("/highlights", highlightsHandler(opts))
 
 	// Everything the API did not match is offered to the static dashboard,
 	// except /api itself. The check comes first and is the important part: an
