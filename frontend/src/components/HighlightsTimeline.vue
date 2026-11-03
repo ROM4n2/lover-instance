@@ -70,25 +70,38 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as api from '../api'
 
 const props = defineProps({
   talker: { type: String, default: '' },
+  overview: { type: Object, default: null },
 })
 
 const loading = ref(false)
-const highlights = ref(null)
+const rawHighlights = ref(null)
 const showShareModal = ref(false)
 const canvasRef = ref(null)
 
+const highlights = computed(() => {
+  if (rawHighlights.value && rawHighlights.value.present) {
+    return rawHighlights.value
+  }
+  const viewHighlights = props.overview && props.overview.view && props.overview.view.Highlights
+  if (viewHighlights && viewHighlights.present) {
+    return viewHighlights
+  }
+  return rawHighlights.value
+})
+
 async function load() {
+  if (highlights.value && highlights.value.present) return
   loading.value = true
   try {
-    highlights.value = await api.getHighlights(props.talker)
+    rawHighlights.value = await api.getHighlights(props.talker)
   } catch {
-    highlights.value = null
+    rawHighlights.value = null
   } finally {
     loading.value = false
   }

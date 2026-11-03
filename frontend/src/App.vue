@@ -49,7 +49,7 @@
         />
 
         <Overview v-if="view === 'overview'" :overview="overview" />
-        <HighlightsTimeline v-else-if="view === 'highlights'" :talker="talker" />
+        <HighlightsTimeline v-else-if="view === 'highlights'" :talker="talker" :overview="overview" />
         <Sentiment v-else-if="view === 'sentiment'" :overview="overview" :analysis="analysis" />
         <Jobs
           v-else-if="view === 'jobs'"

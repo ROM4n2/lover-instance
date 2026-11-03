@@ -59,6 +59,17 @@ func TestHighlightsHandler(t *testing.T) {
 	if !strings.Contains(w2.Body.String(), "present") {
 		t.Errorf("expected present in json response, got: %s", w2.Body.String())
 	}
+
+	// Valid fingerprint -> 200 and present: true
+	reqFingerprint, _ := http.NewRequest(http.MethodGet, "/api/highlights?talker=2241483c34a72321", nil)
+	wF := httptest.NewRecorder()
+	r.ServeHTTP(wF, reqFingerprint)
+	if wF.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for fingerprint, got %d", wF.Code)
+	}
+	if !strings.Contains(wF.Body.String(), `"present":true`) {
+		t.Errorf("expected present: true for fingerprint, got: %s", wF.Body.String())
+	}
 }
 
 func TestImportHandler_InvalidFile(t *testing.T) {

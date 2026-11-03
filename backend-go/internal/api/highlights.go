@@ -10,13 +10,14 @@ import (
 
 func highlightsHandler(opts Options) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		talker := c.Query("talker")
-		if talker == "" {
-			writeError(c, http.StatusBadRequest, "missing_talker", "talker query parameter is required", "pass ?talker=<wxid>")
+		ctx := c.Request.Context()
+		talker, failure := resolveTalker(ctx, c.Query("talker"), opts.Store)
+		if failure != nil {
+			failure.write(c)
 			return
 		}
 
-		view, err := report.CollectHighlights(c.Request.Context(), opts.Store, talker)
+		view, err := report.CollectHighlights(ctx, opts.Store, talker)
 		if err != nil {
 			writeError(c, http.StatusInternalServerError, "highlights_failed", "failed to collect highlights", err.Error())
 			return
