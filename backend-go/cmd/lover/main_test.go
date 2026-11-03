@@ -111,15 +111,66 @@ func stubReport(t *testing.T) {
 	t.Cleanup(func() { openReport = restore })
 }
 
-func TestNoArgumentsIsTheFirstRun(t *testing.T) {
-	newRepo(t)
-	stubProbe(t, "onnxruntime")
+// openedURL records what the run handed to the system opener, so a test can
+// assert the dashboard URL without launching a browser.
+type openedURL struct{ value string }
+
+func stubOpening(t *testing.T) *openedURL {
+	t.Helper()
+	seen := &openedURL{}
+	restore := openReport
+	openReport = func(target string, _ io.Writer) { seen.value = target }
+	t.Cleanup(func() { openReport = restore })
+	return seen
+}
+
+// TestNoArgumentsOpensTheDashboard pins the double-click contract: a person who
+// runs the binary with no arguments gets the interactive panel, not a file
+// written to disk and a program that exits before they can read it. `lover run`
+// is the pipeline's own name, and it is asserted separately below.
+func TestNoArgumentsOpensTheDashboard(t *testing.T) {
+	root := newRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "backend-go", "internal", "web", "dist"), 0o755); err != nil {
+		t.Fatalf("create dist: %v", err)
+	}
+	if err := os.WriteFile(distIndex(root), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatalf("write dist index: %v", err)
+	}
+	stubServer(t)
+	opened := stubOpening(t)
+	stubFreePorts(t)
 
 	got := invoke(t, context.Background())
 
+	if got.code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", got.code, exitOK, got.stderr)
+	}
+	if !strings.Contains(opened.value, "http://") {
+		t.Errorf("no dashboard URL was opened; opened = %q", opened.value)
+	}
+}
+
+// stubFreePorts makes the port questions answer "yes, free" so the test is about
+// dispatch rather than about what else is listening on this machine.
+func stubFreePorts(t *testing.T) {
+	t.Helper()
+	restore := checkPortFree
+	checkPortFree = func(string, string) error { return nil }
+	t.Cleanup(func() { checkPortFree = restore })
+}
+
+// TestRunSubcommandIsThePipeline pins the other half: the report path still has
+// a name of its own, so making the empty argument list open the dashboard does
+// not strand it.
+func TestRunSubcommandIsThePipeline(t *testing.T) {
+	newRepo(t)
+	stubProbe(t, "onnxruntime")
+
+	got := invoke(t, context.Background(), "run")
+
 	// A missing dependency without --yes is reported, never installed: that is
-	// the first run's first question, and answering it proves the empty argument
-	// list reached the run path rather than the usage path.
+	// the run's first question, and answering it proves `run` reached the
+	// pipeline rather than the usage path.
 	if got.code != exitEnv {
 		t.Fatalf("exit code = %d, want %d; stderr:\n%s", got.code, exitEnv, got.stderr)
 	}

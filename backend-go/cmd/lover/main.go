@@ -65,12 +65,14 @@ func main() {
 	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run dispatches to one subcommand. An empty argument list is the first run:
-// "lover" with nothing after it means exactly that, and it is the command the
-// README tells a person to type.
+// run dispatches to one subcommand. An empty argument list opens the dashboard,
+// because the two ways a person meets this binary are a terminal and a
+// double-click, and in both of them "lover" with nothing after it should show the
+// interactive panel rather than silently write a file and exit. The report
+// pipeline is still one word away: `lover run`.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return runFirstRun(ctx, nil, stdout, stderr, false)
+		return runDash(ctx, nil, stdout, stderr)
 	}
 	switch args[0] {
 	case "run":
@@ -79,6 +81,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runFirstRun(ctx, args[1:], stdout, stderr, true)
 	case "dash":
 		return runDash(ctx, args[1:], stdout, stderr)
+	case "serve":
+		return runServe(ctx, args[1:], stdout, stderr)
 	case "model":
 		return runModel(ctx, args[1:], stdout, stderr)
 	case "doctor":
@@ -103,10 +107,11 @@ func printUsage(stderr io.Writer) {
 	fmt.Fprint(stderr, `Usage: lover [command]
 
 Commands:
-  lover                 first run: check the Python dependencies, start the NLP
-                        service, analyze the newest export and open the report
-  lover sync            weekly update: the same run, reporting only what is new
-  lover dash            make sure the dashboard is built, then serve it
+  lover                 open the dashboard in a browser (what a double-click runs)
+  lover dash            the same, explicitly
+  lover run             analyze the newest export and open the self-contained report
+  lover sync            weekly update: the same analysis, reporting only what is new
+  lover pull            extract the latest messages with chatlog-keeper, then sync
   lover model list      show which model versions are installed; never downloads
   lover model add <v>   download and verify one model version
   lover model verify    re-hash the installed weights and list what does not match

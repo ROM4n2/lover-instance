@@ -103,24 +103,33 @@ func runDash(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	root, err := repoRoot()
 	if err != nil {
-		fmt.Fprintf(stderr, "lover: %v\n", err)
-		return exitEnv
-	}
-
-	stale, err := distStale(root)
-	if err != nil {
-		fmt.Fprintf(stderr, "lover: %v\n", err)
-		return exitEnv
-	}
-	if stale {
-		if !npmAvailable() {
-			fmt.Fprintf(stderr, "lover: Dashboard 跳过：npm 不在 PATH 上，前端无法构建；报告路径不受影响（`lover` 生成的报告是自包含 HTML，浏览器直接打开即可）\n")
+		// A release build is one file: there is no source tree to find, and
+		// nothing under it is needed, because the bundle is embedded and the
+		// server is this same executable.
+		if !dashboardEmbedded {
+			fmt.Fprintf(stderr, "lover: %v\n", err)
 			return exitEnv
 		}
-		fmt.Fprintf(stderr, "lover: the dashboard bundle is missing or older than frontend/src; running npm run build\n")
-		if err := runNPMBuild(ctx, root, stderr); err != nil {
-			fmt.Fprintf(stderr, "lover: Dashboard 跳过：%v；报告路径不受影响\n", err)
+		root, _ = os.Executable()
+		root = filepath.Dir(root)
+	}
+
+	if !dashboardEmbedded {
+		stale, err := distStale(root)
+		if err != nil {
+			fmt.Fprintf(stderr, "lover: %v\n", err)
 			return exitEnv
+		}
+		if stale {
+			if !npmAvailable() {
+				fmt.Fprintf(stderr, "lover: Dashboard 跳过：npm 不在 PATH 上，前端无法构建；报告路径不受影响（`lover` 生成的报告是自包含 HTML，浏览器直接打开即可）\n")
+				return exitEnv
+			}
+			fmt.Fprintf(stderr, "lover: the dashboard bundle is missing or older than frontend/src; running npm run build\n")
+			if err := runNPMBuild(ctx, root, stderr); err != nil {
+				fmt.Fprintf(stderr, "lover: Dashboard 跳过：%v；报告路径不受影响\n", err)
+				return exitEnv
+			}
 		}
 	}
 
@@ -141,12 +150,17 @@ func runDash(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if err := ensurePortFree("the NLP service", nlpP); err == nil {
 			python := pythonCommand()
 			serviceDir := filepath.Join(root, "nlp-service")
-			if missing, _ := probeDependencies(ctx, python, serviceDir, dependencyModules); len(missing) == 0 {
-				svc, err := startService(ctx, serviceConfig{python: python, port: nlpP, dir: serviceDir, stderr: stderr})
-				if err == nil {
-					defer svc.stop()
-					fmt.Fprintf(stderr, "lover: started the NLP service on port %s\n", nlpP)
-					_ = svc.waitReady(ctx, cfg.nlpURL, serviceReadyTimeout)
+			// A release build ships no Python service; the dashboard falls
+			// back to sentiment already stored in the database, so a missing
+			// service directory is not a reason to refuse to serve.
+			if _, statErr := os.Stat(serviceDir); statErr == nil {
+				if missing, _ := probeDependencies(ctx, python, serviceDir, dependencyModules); len(missing) == 0 {
+					svc, err := startService(ctx, serviceConfig{python: python, port: nlpP, dir: serviceDir, stderr: stderr})
+					if err == nil {
+						defer svc.stop()
+						fmt.Fprintf(stderr, "lover: started the NLP service on port %s\n", nlpP)
+						_ = svc.waitReady(ctx, cfg.nlpURL, serviceReadyTimeout)
+					}
 				}
 			}
 		}
@@ -252,7 +266,14 @@ func npmCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, npm[0], npm[1:]...)
 }
 
-// startDashboardServer builds cmd/server and runs it as this command's child.
+// startDashboardServer starts whatever serves the dashboard. A source build
+// compiles cmd/server and supervises the child; a release build has no toolchain
+// to compile anything, so it re-runs this same binary as `lover serve`. Both
+// return a supervised child, because the process-group kill and the single
+// output stream are what a double-clicked tool needs either way.
+var startDashboardServer func(ctx context.Context, cfg dashOptions, root string, stderr io.Writer) (*child, error)
+
+// buildAndSuperviseServer builds cmd/server and runs it as this command's child.
 //
 // The compiled binary is this command's own artefact and this command is what
 // deletes it: `go build` was told to write into the temporary directory, which
@@ -260,7 +281,7 @@ func npmCommand(ctx context.Context, args ...string) *exec.Cmd {
 // named after a PID that has already exited. The removal is registered on the
 // child rather than done here, because the file is open for as long as the
 // process runs and only the caller knows when the wait has returned.
-var startDashboardServer = func(ctx context.Context, cfg dashOptions, root string, stderr io.Writer) (*child, error) {
+func buildAndSuperviseServer(ctx context.Context, cfg dashOptions, root string, stderr io.Writer) (*child, error) {
 	binary, err := buildServer(ctx, root, stderr)
 	if err != nil {
 		return nil, err

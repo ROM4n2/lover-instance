@@ -180,15 +180,15 @@ func isCandidateExport(path string) bool {
 	return strings.Contains(prefix, "conversation_id") || strings.Contains(prefix, "msg_type") || strings.Contains(prefix, "sender")
 }
 
-func findSidecarBin() (string, []string, error) {
+func findSidecarBin() (string, []string, string, error) {
 	if exe, err := os.Executable(); err == nil {
 		candidate := filepath.Join(filepath.Dir(exe), "chatlog-keeper.exe")
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil, nil
+			return candidate, nil, "", nil
 		}
 	}
 	if info, err := os.Stat("./chatlog-keeper.exe"); err == nil && !info.IsDir() {
-		return "./chatlog-keeper.exe", nil, nil
+		return "./chatlog-keeper.exe", nil, "", nil
 	}
 	if root, err := filepath.Abs("."); err == nil {
 		sibling := filepath.Join(filepath.Dir(root), "chatlog-keeper")
@@ -197,13 +197,13 @@ func findSidecarBin() (string, []string, error) {
 			if p := os.Getenv("LOVER_PYTHON"); p != "" {
 				python = p
 			}
-			return python, []string{"-m", "chatlog_keeper.cli"}, nil
+			return python, []string{"-m", "chatlog_keeper.cli"}, sibling, nil
 		}
 	}
 	if path, err := exec.LookPath("chatlog-keeper"); err == nil {
-		return path, nil, nil
+		return path, nil, "", nil
 	}
-	return "", nil, os.ErrNotExist
+	return "", nil, "", os.ErrNotExist
 }
 
 func syncSidecarHandler(opts Options) gin.HandlerFunc {
@@ -211,7 +211,7 @@ func syncSidecarHandler(opts Options) gin.HandlerFunc {
 		ctx := c.Request.Context()
 		talker, _ := resolveTalker(ctx, c.Query("talker"), opts.Store)
 
-		bin, baseArgs, err := findSidecarBin()
+		bin, baseArgs, workDir, err := findSidecarBin()
 		if err != nil {
 			writeError(c, http.StatusNotFound, "sidecar_missing",
 				"未检测到微信提取助手 (chatlog-keeper.exe)",
@@ -225,6 +225,9 @@ func syncSidecarHandler(opts Options) gin.HandlerFunc {
 		}
 
 		cmd := exec.CommandContext(ctx, bin, args...)
+		if workDir != "" {
+			cmd.Dir = workDir
+		}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			writeError(c, http.StatusInternalServerError, "sidecar_failed",

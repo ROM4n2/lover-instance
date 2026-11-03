@@ -205,7 +205,14 @@ func (e *portError) Unwrap() error { return e.err }
 // it cannot is part of the contract: on Windows, reading another process's port
 // owner needs an elevated netstat, and a message that quietly omitted the PID
 // would leave the reader wondering whether it was looked for.
-func ensurePortFree(purpose, port string) error {
+func ensurePortFree(purpose, port string) error { return checkPortFree(purpose, port) }
+
+// checkPortFree is the real implementation behind the seam. It is a variable so a
+// test can prove the empty argument list reaches the dashboard path without
+// depending on whether the machine happens to have the default port free: the
+// port is a property of this machine, and a test that asserted on it would fail
+// or pass for a reason unrelated to the code under test.
+var checkPortFree = func(purpose, port string) error {
 	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err == nil {
 		_ = listener.Close()
