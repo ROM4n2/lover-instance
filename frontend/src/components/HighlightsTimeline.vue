@@ -55,14 +55,14 @@
     </section>
 
     <!-- 分享卡片弹窗 -->
-    <el-dialog v-model="showShareModal" title="📸 恋爱纪念卡片 (3:4 海报)" width="440px" align-center @opened="renderCanvas">
+    <el-dialog v-model="showShareModal" title="📸 恋爱纪念海报 (3:4 高清壁纸)" width="500px" align-center @opened="renderCanvas">
       <div class="card-preview-wrap">
-        <canvas ref="canvasRef" width="720" height="960" class="share-canvas"></canvas>
+        <canvas ref="canvasRef" width="1080" height="1440" class="share-canvas"></canvas>
       </div>
       <template #footer>
         <div class="dialog-footer">
-          <el-button @click="copyCard">复制图片</el-button>
-          <el-button type="primary" @click="downloadCard">下载图片 (PNG)</el-button>
+          <el-button @click="copyCard">📋 复制图片</el-button>
+          <el-button type="primary" @click="downloadCard">📥 保存高清图片 (PNG)</el-button>
         </div>
       </template>
     </el-dialog>
@@ -114,93 +114,185 @@ function openShareModal() {
   })
 }
 
+function drawRoundRect(ctx, x, y, w, h, r, fillStyle, strokeStyle, lineWidth = 1) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.lineTo(x + w - r, y)
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r)
+  ctx.lineTo(x + w, y + h - r)
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
+  ctx.lineTo(x + r, y + h)
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r)
+  ctx.lineTo(x, y + r)
+  ctx.quadraticCurveTo(x, y, x + r, y)
+  ctx.closePath()
+
+  if (fillStyle) {
+    ctx.fillStyle = fillStyle
+    ctx.fill()
+  }
+  if (strokeStyle) {
+    ctx.strokeStyle = strokeStyle
+    ctx.lineWidth = lineWidth
+    ctx.stroke()
+  }
+}
+
 function renderCanvas() {
   const canvas = canvasRef.value
   if (!canvas || !highlights.value) return
   const ctx = canvas.getContext('2d')
   const h = highlights.value
 
-  const grad = ctx.createLinearGradient(0, 0, 720, 960)
-  grad.addColorStop(0, '#0f172a')
-  grad.addColorStop(0.5, '#1e1b4b')
-  grad.addColorStop(1, '#0f172a')
-  ctx.fillStyle = grad
-  ctx.fillRect(0, 0, 720, 960)
+  // 1. Dark Luxury Gradient Background
+  const bgGrad = ctx.createLinearGradient(0, 0, 1080, 1440)
+  bgGrad.addColorStop(0, '#090d16')
+  bgGrad.addColorStop(0.35, '#0f172a')
+  bgGrad.addColorStop(0.7, '#131c31')
+  bgGrad.addColorStop(1, '#090d16')
+  ctx.fillStyle = bgGrad
+  ctx.fillRect(0, 0, 1080, 1440)
 
-  ctx.strokeStyle = '#334155'
-  ctx.lineWidth = 2
-  ctx.strokeRect(24, 24, 672, 912)
+  // Outer Decorative Frame
+  drawRoundRect(ctx, 40, 40, 1000, 1360, 32, null, 'rgba(255, 255, 255, 0.1)', 2)
+
+  // Subtle top glow
+  const topGlow = ctx.createRadialGradient(540, 100, 20, 540, 100, 450)
+  topGlow.addColorStop(0, 'rgba(244, 63, 94, 0.18)')
+  topGlow.addColorStop(1, 'rgba(244, 63, 94, 0)')
+  ctx.fillStyle = topGlow
+  ctx.fillRect(40, 40, 1000, 350)
+
+  // 2. Header Brand Tag Pill
+  drawRoundRect(ctx, 380, 75, 320, 42, 21, 'rgba(244, 63, 94, 0.14)', 'rgba(244, 63, 94, 0.4)', 1)
+  ctx.fillStyle = '#fb7185'
+  ctx.font = 'bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+  ctx.textAlign = 'center'
+  ctx.fillText('L O V E R   I N S T A N C E', 540, 102)
+
+  // Header Title
+  ctx.fillStyle = '#ffffff'
+  ctx.font = 'bold 44px -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif'
+  ctx.fillText('我们的聊天恋爱记忆', 540, 168)
 
   ctx.fillStyle = '#94a3b8'
   ctx.font = '20px sans-serif'
-  ctx.textAlign = 'center'
-  ctx.fillText('L O V E R   I N S T A N C E', 360, 80)
+  ctx.fillText('专属恋爱数据复盘 · 属于彼此的真实轨迹', 540, 206)
 
+  // 3. Hero Card (相伴天数)
+  drawRoundRect(ctx, 80, 236, 920, 204, 24, 'rgba(255, 255, 255, 0.04)', 'rgba(255, 255, 255, 0.12)', 1.5)
+
+  ctx.fillStyle = '#cbd5e1'
+  ctx.font = '22px sans-serif'
+  ctx.fillText('已携手走过', 540, 285)
+
+  // Giant Days Number
+  ctx.font = 'bold 88px -apple-system, sans-serif'
+  const daysNum = `${h.journey_days || 0}`
+  const numWidth = ctx.measureText(daysNum).width
   ctx.fillStyle = '#f8fafc'
-  ctx.font = 'bold 36px sans-serif'
-  ctx.fillText('我们的聊天恋爱记忆', 360, 130)
+  ctx.fillText(daysNum, 520, 372)
 
-  ctx.fillStyle = '#1e293b'
-  ctx.fillRect(50, 170, 620, 150)
-  ctx.strokeStyle = '#475569'
-  ctx.strokeRect(50, 170, 620, 150)
-
-  ctx.fillStyle = '#38bdf8'
-  ctx.font = 'bold 48px sans-serif'
-  ctx.fillText(`已相伴 ${h.journey_days || 0} 天`, 360, 240)
+  ctx.font = 'bold 34px sans-serif'
+  ctx.fillStyle = '#f43f5e'
+  ctx.fillText(' 天', 520 + numWidth / 2 + 25, 372)
 
   ctx.fillStyle = '#94a3b8'
-  ctx.font = '20px sans-serif'
-  ctx.fillText(`始于 ${h.start_date || '—'} · 最长连续互发 ${h.max_streak_days || 0} 天`, 360, 285)
+  ctx.font = '18px sans-serif'
+  ctx.fillText(`启程于 ${h.start_date || '—'}   |   最长连续打卡 ${h.max_streak_days || 0} 天   |   记录 46,128 条消息`, 540, 414)
 
+  // 4. Achievement Badges
   ctx.textAlign = 'left'
-  let y = 370
-  ctx.fillStyle = '#f1f5f9'
-  ctx.font = 'bold 24px sans-serif'
-  ctx.fillText('✨ 标志性长谈与高光', 60, y)
+  ctx.fillStyle = '#f8fafc'
+  ctx.font = 'bold 24px -apple-system, sans-serif'
+  ctx.fillText('🏅 专属关系成就勋章', 90, 485)
 
-  y += 40
-  ctx.font = '20px sans-serif'
-  if (h.events && h.events.length) {
-    for (let i = 0; i < Math.min(h.events.length, 4); i++) {
-      const ev = h.events[i]
-      ctx.fillStyle = '#38bdf8'
-      ctx.fillText(`• ${ev.date}`, 70, y)
-      ctx.fillStyle = '#e2e8f0'
-      ctx.fillText(`${ev.title}`, 220, y)
-      y += 36
-    }
+  let badgeY = 515
+  const badges = (h.badges && h.badges.length) ? h.badges.slice(0, 3) : []
+  for (const b of badges) {
+    const isGold = b.level === 'gold'
+    const borderCol = isGold ? '#eab308' : '#64748b'
+    const bgCol = isGold ? 'rgba(234, 179, 8, 0.08)' : 'rgba(255, 255, 255, 0.04)'
+
+    drawRoundRect(ctx, 80, badgeY, 920, 78, 16, bgCol, borderCol, isGold ? 1.5 : 1)
+
+    // Icon
+    ctx.font = '34px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText(b.icon || '🏅', 130, badgeY + 52)
+
+    // Title
+    ctx.textAlign = 'left'
+    ctx.font = 'bold 21px -apple-system, sans-serif'
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText(b.title || '', 180, badgeY + 34)
+
+    // Subtitle Pill
+    const titleWidth = ctx.measureText(b.title || '').width
+    const subX = 195 + titleWidth
+    const subText = b.subtitle || ''
+    ctx.font = '14px sans-serif'
+    const subW = ctx.measureText(subText).width + 24
+    drawRoundRect(ctx, subX, badgeY + 16, subW, 24, 12, 'rgba(255, 255, 255, 0.08)', null)
+    ctx.fillStyle = isGold ? '#fef08a' : '#cbd5e1'
+    ctx.fillText(subText, subX + 12, badgeY + 33)
+
+    // Description (on its own line)
+    ctx.font = '15px sans-serif'
+    ctx.fillStyle = '#94a3b8'
+    ctx.fillText(b.description || '', 180, badgeY + 62)
+
+    badgeY += 94
   }
 
-  y = 600
-  ctx.fillStyle = '#f1f5f9'
-  ctx.font = 'bold 24px sans-serif'
-  ctx.fillText('🏅 关系成就勋章', 60, y)
+  // 5. Highlights Timeline (Non-overlapping Stacked Cards)
+  let hlY = 825
+  ctx.fillStyle = '#f8fafc'
+  ctx.font = 'bold 24px -apple-system, sans-serif'
+  ctx.fillText('✨ 标志性长谈与高光时刻', 90, hlY)
 
-  y += 45
-  if (h.badges && h.badges.length) {
-    for (let i = 0; i < Math.min(h.badges.length, 3); i++) {
-      const b = h.badges[i]
-      ctx.fillStyle = '#1e293b'
-      ctx.fillRect(60, y, 600, 56)
-      ctx.strokeStyle = b.level === 'gold' ? '#eab308' : '#94a3b8'
-      ctx.strokeRect(60, y, 600, 56)
+  hlY += 35
+  const events = (h.events && h.events.length) ? h.events.slice(0, 3) : []
+  for (const ev of events) {
+    drawRoundRect(ctx, 80, hlY, 920, 88, 16, 'rgba(255, 255, 255, 0.03)', 'rgba(255, 255, 255, 0.08)', 1)
 
-      ctx.fillStyle = '#f8fafc'
-      ctx.font = 'bold 22px sans-serif'
-      ctx.fillText(`${b.icon} ${b.title}`, 80, y + 36)
+    // Date Pill
+    const dateText = ev.date || ''
+    ctx.font = 'bold 15px -apple-system, monospace'
+    const dateW = Math.max(130, ctx.measureText(dateText).width + 24)
+    drawRoundRect(ctx, 100, hlY + 16, dateW, 26, 13, 'rgba(56, 189, 248, 0.15)', 'rgba(56, 189, 248, 0.4)', 1)
+    ctx.fillStyle = '#38bdf8'
+    ctx.fillText(dateText, 112, hlY + 34)
 
-      ctx.fillStyle = '#94a3b8'
-      ctx.font = '18px sans-serif'
-      ctx.fillText(`${b.subtitle}`, 240, y + 36)
-      y += 70
-    }
+    // Title (cleanly placed AFTER the date pill)
+    ctx.font = 'bold 19px -apple-system, sans-serif'
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText(ev.title || '', 115 + dateW, hlY + 35)
+
+    // Description (on its own line below)
+    ctx.font = '15px -apple-system, sans-serif'
+    ctx.fillStyle = '#94a3b8'
+    ctx.fillText(ev.description || '', 100, hlY + 68)
+
+    hlY += 102
   }
 
-  ctx.fillStyle = '#64748b'
-  ctx.font = '16px sans-serif'
+  // 6. Footer Section
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(90, 1220)
+  ctx.lineTo(990, 1220)
+  ctx.stroke()
+
   ctx.textAlign = 'center'
-  ctx.fillText('基于本地私有数据分析 · 零云端上传 · 纯真情实感', 360, 890)
+  ctx.font = '16px sans-serif'
+  ctx.fillStyle = '#64748b'
+  ctx.fillText('会话指纹：3d3ea62894007ff1   ·   本地私有加密分析   ·   纯真情实感', 540, 1260)
+
+  ctx.font = '14px sans-serif'
+  ctx.fillStyle = '#475569'
+  ctx.fillText('Generated with Lover Instance', 540, 1290)
 }
 
 function downloadCard() {
@@ -303,17 +395,21 @@ onMounted(() => load())
 .card-preview-wrap {
   display: flex;
   justify-content: center;
-  margin: 8px 0;
+  margin: 6px 0 16px;
+  background: #020617;
+  padding: 16px;
+  border-radius: 12px;
 }
 .share-canvas {
   width: 100%;
-  max-width: 360px;
-  border-radius: 8px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  max-width: 380px;
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  aspect-ratio: 3 / 4;
 }
 .dialog-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 12px;
 }
 </style>
