@@ -33,25 +33,32 @@
     </header>
 
     <main class="content">
-      <el-alert
-        v-if="overviewError"
-        :title="overviewError.message || '无法读取概览数据'"
-        :description="overviewError.hint || ''"
-        type="error"
-        show-icon
-        :closable="false"
-        style="margin-bottom: 14px"
+      <EmptyOnboarding
+        v-if="isEmptyDB"
+        @imported="refreshAll"
       />
+      <template v-else>
+        <el-alert
+          v-if="overviewError"
+          :title="overviewError.message || '无法读取概览数据'"
+          :description="overviewError.hint || ''"
+          type="error"
+          show-icon
+          :closable="false"
+          style="margin-bottom: 14px"
+        />
 
-      <Overview v-if="view === 'overview'" :overview="overview" />
-      <Sentiment v-else-if="view === 'sentiment'" :overview="overview" :analysis="analysis" />
-      <Jobs
-        v-else-if="view === 'jobs'"
-        :health="health"
-        :talker="talker"
-        :overview="overview"
-        @refresh="refreshAll"
-      />
+        <Overview v-if="view === 'overview'" :overview="overview" />
+        <HighlightsTimeline v-else-if="view === 'highlights'" :talker="talker" />
+        <Sentiment v-else-if="view === 'sentiment'" :overview="overview" :analysis="analysis" />
+        <Jobs
+          v-else-if="view === 'jobs'"
+          :health="health"
+          :talker="talker"
+          :overview="overview"
+          @refresh="refreshAll"
+        />
+      </template>
     </main>
   </div>
 </template>
@@ -61,12 +68,15 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import * as api from './api'
 import { normalizeView, readState, writeState } from './useUrlState'
 import HealthBadge from './components/HealthBadge.vue'
+import HighlightsTimeline from './components/HighlightsTimeline.vue'
+import EmptyOnboarding from './components/EmptyOnboarding.vue'
 import Overview from './views/Overview.vue'
 import Sentiment from './views/Sentiment.vue'
 import Jobs from './views/Jobs.vue'
 
 const tabs = [
   { key: 'overview', label: '概览' },
+  { key: 'highlights', label: '高光' },
   { key: 'sentiment', label: '情感' },
   { key: 'jobs', label: '任务' },
 ]
@@ -78,6 +88,10 @@ const talkerInput = ref('')
 const health = ref(null)
 const overview = ref(null)
 const overviewError = ref(null)
+
+const isEmptyDB = computed(() => {
+  return !overview.value && overviewError.value && overviewError.value.code === 'talker_required'
+})
 
 let healthTimer = null
 let progressTimer = null

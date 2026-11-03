@@ -5,7 +5,7 @@
 // Note (design decision D4): the bookmark can carry a conversation fingerprint,
 // which is a hash of the account key rather than the key itself, but it is
 // still a stable handle to one person. The UI says so next to the field.
-const VIEWS = ['overview', 'sentiment', 'jobs']
+const VIEWS = ['overview', 'highlights', 'sentiment', 'jobs']
 
 export function normalizeView(value) {
   return VIEWS.includes(value) ? value : 'overview'

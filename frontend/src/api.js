@@ -62,3 +62,36 @@ export function cancelJob(id) {
 export function exportReport(payload = {}) {
   return request('/export', { method: 'POST', body: JSON.stringify(payload) })
 }
+
+export function getHighlights(talker) {
+  const params = new URLSearchParams()
+  if (talker) params.set('talker', talker)
+  const query = params.toString()
+  return request(`/highlights${query ? `?${query}` : ''}`)
+}
+
+export function loadDemo() {
+  return request('/demo', { method: 'POST' })
+}
+
+export async function uploadExport(file) {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await fetch(BASE + '/import', {
+    method: 'POST',
+    body: form,
+  })
+  const text = await response.text()
+  let body = null
+  if (text) {
+    try { body = JSON.parse(text) } catch {}
+  }
+  if (!response.ok) {
+    const error = new Error((body && body.message) || `上传失败（HTTP ${response.status}）`)
+    error.status = response.status
+    error.code = body && body.code
+    error.hint = body && body.hint
+    throw error
+  }
+  return body
+}
