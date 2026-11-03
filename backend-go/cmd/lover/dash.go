@@ -149,6 +149,7 @@ func runDash(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	defer server.runCleanup()
 	defer server.stop()
 	fmt.Fprintf(stdout, "lover: dashboard on http://%s (Ctrl-C to stop)\n", cfg.addr)
+	openReport("http://"+cfg.addr, stderr)
 
 	select {
 	case <-ctx.Done():

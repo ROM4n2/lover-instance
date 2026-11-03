@@ -40,6 +40,15 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .m-date{font-size:12px;color:var(--muted);font-weight:600}
 .m-title{font-size:14px;font-weight:600;margin:2px 0}
 .m-desc{font-size:13px;color:var(--ink)}
+.badges-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:14px 0}
+.badge-card{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;border:1px solid var(--line);background:#fafafa}
+.badge-card.badge-gold{border-color:#fef08a;background:#fefce8}
+.badge-card.badge-silver{border-color:#e2e8f0;background:#f8fafc}
+.badge-card.badge-bronze{border-color:#fed7aa;background:#fff7ed}
+.b-icon{font-size:24px}
+.b-title{font-size:13px;font-weight:600;color:var(--ink)}
+.b-sub{font-size:11px;color:var(--muted);font-weight:normal}
+.b-desc{font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4}
 </style>
 </head>
 <body>
@@ -77,6 +86,19 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
     <div class="card"><div class="k">启程之日</div><div class="v">{{.View.Highlights.StartDate}}</div><div class="s">已走过 {{.View.Highlights.JourneyDays}} 天</div></div>
     <div class="card"><div class="k">最长连续聊天</div><div class="v">{{.View.Highlights.MaxStreakDays}} 天</div><div class="s">{{.View.Highlights.StreakPeriod}}</div></div>
   </div>
+  {{if .View.Highlights.Badges}}
+  <div class="badges-grid">
+    {{range .View.Highlights.Badges}}
+    <div class="badge-card badge-{{.Level}}">
+      <div class="b-icon">{{.Icon}}</div>
+      <div class="b-text">
+        <div class="b-title">{{.Title}} <span class="b-sub">({{.Subtitle}})</span></div>
+        <div class="b-desc">{{.Description}}</div>
+      </div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
   <div class="milestones-timeline">
     {{range .View.Highlights.Events}}
     <div class="milestone-item">

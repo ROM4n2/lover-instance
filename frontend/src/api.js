@@ -74,6 +74,10 @@ export function loadDemo() {
   return request('/demo', { method: 'POST' })
 }
 
+export function scanExport(autoImport = false) {
+  return request(`/scan-export${autoImport ? '?import=true' : ''}`, { method: 'POST' })
+}
+
 export async function uploadExport(file) {
   const form = new FormData()
   form.append('file', file)

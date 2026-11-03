@@ -632,5 +632,105 @@ func CollectHighlights(ctx context.Context, s *store.Store, talker string) (High
 			view.LateNights = append(view.LateNights, mv)
 		}
 	}
+
+	var maxPeak, maxLateNight float64
+	for _, p := range view.PeakDays {
+		if p.MetricValue > maxPeak {
+			maxPeak = p.MetricValue
+		}
+	}
+	for _, n := range view.LateNights {
+		if n.MetricValue > maxLateNight {
+			maxLateNight = n.MetricValue
+		}
+	}
+
+	if view.MaxStreakDays >= 30 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "streak_gold",
+			Icon:        "🏆",
+			Title:       "心动长跑",
+			Subtitle:    fmt.Sprintf("连续连击 %d 天", view.MaxStreakDays),
+			Description: "连续互发消息突破 30 天，日日有回响，默契坚如磐石",
+			Level:       "gold",
+		})
+	} else if view.MaxStreakDays >= 7 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "streak_silver",
+			Icon:        "🔥",
+			Title:       "连击火花",
+			Subtitle:    fmt.Sprintf("连续连击 %d 天", view.MaxStreakDays),
+			Description: "连续一周以上每日互发消息，生活点滴时刻相连",
+			Level:       "silver",
+		})
+	} else if view.MaxStreakDays >= 1 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "streak_bronze",
+			Icon:        "🌱",
+			Title:       "初试火花",
+			Subtitle:    fmt.Sprintf("连续连击 %d 天", view.MaxStreakDays),
+			Description: "携手起跑，每一条互动都是浪漫序章",
+			Level:       "bronze",
+		})
+	}
+
+	if maxLateNight >= 200 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "night_gold",
+			Icon:        "🌙",
+			Title:       "夜猫长谈",
+			Subtitle:    fmt.Sprintf("单夜凌晨 %d 条", int(maxLateNight)),
+			Description: "凌晨时分倾心长谈超 200 句，星光作伴的专属深聊夜",
+			Level:       "gold",
+		})
+	} else if maxLateNight >= 50 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "night_silver",
+			Icon:        "✨",
+			Title:       "星夜长语",
+			Subtitle:    fmt.Sprintf("单夜凌晨 %d 条", int(maxLateNight)),
+			Description: "深夜未眠时的细腻交心，万籁俱寂时的唯一偏爱",
+			Level:       "silver",
+		})
+	} else if maxLateNight > 0 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "night_bronze",
+			Icon:        "🍵",
+			Title:       "晚安细语",
+			Subtitle:    fmt.Sprintf("单夜凌晨 %d 条", int(maxLateNight)),
+			Description: "夜色微醺，轻语互道晚安",
+			Level:       "bronze",
+		})
+	}
+
+	if maxPeak >= 1000 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "peak_gold",
+			Icon:        "💬",
+			Title:       "倾心狂飙",
+			Subtitle:    fmt.Sprintf("单日长谈 %d 条", int(maxPeak)),
+			Description: "单日互动突破千条，热度彻底爆表，打字手速拉满",
+			Level:       "gold",
+		})
+	} else if maxPeak >= 300 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "peak_silver",
+			Icon:        "💌",
+			Title:       "热聊时刻",
+			Subtitle:    fmt.Sprintf("单日长谈 %d 条", int(maxPeak)),
+			Description: "单日畅聊超 300 条消息，聊到手机发烫亦不舍停歇",
+			Level:       "silver",
+		})
+	} else if maxPeak > 0 {
+		view.Badges = append(view.Badges, BadgeView{
+			ID:          "peak_bronze",
+			Icon:        "☕",
+			Title:       "欢声盈盈",
+			Subtitle:    fmt.Sprintf("单日长谈 %d 条", int(maxPeak)),
+			Description: "日常分享不断，言语间尽是温柔",
+			Level:       "bronze",
+		})
+	}
+
 	return view, nil
 }

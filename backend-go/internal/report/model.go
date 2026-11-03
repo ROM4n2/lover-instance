@@ -245,6 +245,16 @@ type MilestoneView struct {
 	MetricValue float64 `json:"metric_value"`
 }
 
+// BadgeView represents an earned milestone achievement.
+type BadgeView struct {
+	ID          string `json:"id"`
+	Icon        string `json:"icon"`
+	Title       string `json:"title"`
+	Subtitle    string `json:"subtitle"`
+	Description string `json:"description"`
+	Level       string `json:"level"` // "bronze", "silver", "gold"
+}
+
 // HighlightsView groups milestone moments discovered in the conversation.
 type HighlightsView struct {
 	Present       bool            `json:"present"`
@@ -256,6 +266,7 @@ type HighlightsView struct {
 	PeakDays      []MilestoneView `json:"peak_days"`
 	LateNights    []MilestoneView `json:"late_nights"`
 	Events        []MilestoneView `json:"events"`
+	Badges        []BadgeView     `json:"badges"`
 }
 
 // DisclaimerText is fixed. It is a constant rather than a field a caller fills
