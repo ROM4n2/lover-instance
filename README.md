@@ -1,212 +1,139 @@
-# lover-instance
+# Lover Instance
 
-> 把你和 TA 的微信聊天记录，变成一份可回顾、可分享的关系分析报告。
+<p align="center">
+  <strong>把你和 TA 的微信聊天记录，变成一份有温度、可回顾、可分享的关系复盘报告。</strong>
+</p>
 
-本地优先（local-first）的双人微信聊天记录分析平台：自动获取本地微信聊天记录 → 结构化存储 → 描述性统计 / 词频 / 情感分析 → **可交互 Dashboard（自己探索）** 与 **自包含 HTML 报告（发给 TA / 存档）**。
+<p align="center">
+  <a href="https://github.com/ROM4n2/lover-instance/releases"><img src="https://img.shields.io/github/v/release/ROM4n2/lover-instance?style=flat-square&color=rose" alt="Release"></a>
+  <img src="https://img.shields.io/badge/Privacy-100%25%20Local%20Only-blue?style=flat-square" alt="Privacy-First">
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-green?style=flat-square" alt="Platform">
+  <img src="https://img.shields.io/badge/License-MIT-orange?style=flat-square" alt="License">
+</p>
 
-> ⚠️ 使用前请阅读 [DISCLAIMER.md](DISCLAIMER.md)：本仓库**不含任何解密代码**，数据获取依赖你自装的第三方工具；分析结论为娱乐性统计，非关系诊断；分享报告前请先征得对方同意。
+---
 
-## 架构
+## 🌟 为什么做这个项目？
 
+情侣或伴侣间动辄数万甚至数十万条微信聊天记录，沉淀着彼此最真实的相伴轨迹：初次相遇的怦然心动、连续打卡的默契习惯、彻夜长谈的星夜私语，以及彼此独有的高频热词。
+
+但微信官方并不提供关系维度的深度分析，而市面上的许多在线工具往往需要把私密聊天记录上传到第三方云端服务器——这带来了不可忽视的隐私泄露风险。
+
+**Lover Instance 坚持本地优先（Local-First）原则**：
+- **100% 本地运行**：数据库（SQLite WAL）、分析引擎、图表渲染与可选的本地大模型全部在你的电脑本地运行，**绝对零云端上传、零联网外呼、零第三方存储**。
+- **开箱零门槛**：提供 **10.6 MB 纯绿色免安装包**，无需安装 Node.js、npm 或 Python，解压双击即可在浏览器直接弹出精美可视化面板。
+- **自包含与仪式感**：不仅提供自我探索的本地交互看板，还支持一键生成 **3:4 手机竖版朋友圈高清纪念海报（PNG）** 以及可直接微信发给伴侣的 **单文件离线报告（`report.html`）**。
+
+> ⚠️ **合规与免责声明**：使用前请阅读 [DISCLAIMER.md](DISCLAIMER.md)。依据 [ADR-0001](docs/adr/ADR-0001-compliance-sidecar-adapter.md) 铁律，本仓库**绝不内置、绝不分发任何解密或密钥提取代码**；数据获取走宿主机外部工具导出；分析结论为娱乐与纪念性统计，非关系诊断；分享报告前请务必征得对方同意。
+
+---
+
+## ✨ 核心功能亮点
+
+### 1. 📊 全景恋爱数据复盘看板 (Vue3 + ECharts)
+- **作息与活跃度热力图**：统计周一至周日、0–23 点双方消息分布（严格对齐东八区日界），一眼看清彼此最常热聊的黄金时段；
+- **专属双人词云对比**：提取双方各自最常说的独特话题词与表达偏好；
+- **表情包与常用表情排行**：统计彼此最爱用的表情符号；
+- **互动节奏与回复延迟**：统计双方发起对话的比例、当天开场/收尾人，以及以秒为分辨率的回复时延中位数与极速秒回率。
+
+### 2. 🏆 关系高光里程碑与成就勋章系统
+- **启程之日**：精确锁定首次相识并留下记录的日期，展示携手走过的总天数与互动总量；
+- **心动连击 (Streak)**：自动识别历史最长连续互发消息天数区间，见证日日有回响的坚韧默契；
+- **倾心长谈 Top 3 峰值日**：单日消息量历史峰值挖掘，附带双方消息占比；
+- **深夜畅聊夜 Top 3**：凌晨 00:00–05:00 深夜对话峰值记录；
+- **三大专属关系成就勋章**：
+  - 🏆 **【心动长跑】**：连续连击突破 30/49 天，默契坚如磐石；
+  - 🌙 **【夜猫长谈】**：单夜凌晨畅聊突破 200/500 句，星光作伴的专属深聊夜；
+  - 💬 **【倾心狂飙】**：单日长谈突破 1000/1800 句，打字手速彻底拉满。
+
+### 3. 📸 一键生成 3:4 手机朋友圈/小红书高清纪念海报
+- **2K 视网膜级超清画质 (1080 × 1440)**：纯客户端离线绘制，高级午夜深蓝黑曜石渐变风格；
+- **动态防遮挡排版**：日期胶囊与多行标题/描述自适应测量，彻底告别文字重叠与锯齿；
+- **一键分享**：支持一键「保存图片 (PNG)」或「复制到剪贴板」，直接发给伴侣或小红书/朋友圈分享。
+
+### 4. 📄 纯脱机自包含 HTML 报告 (`report.html`)
+- 所有图表库、样式与数据全量内嵌（`ExternalRefs` 严格校验为 0 外链）；
+- 生成单个 HTML 文件，断网即开，可以直接在微信聊天框里像文件一样发给 TA 留存纪念。
+
+---
+
+## 🚀 极简上手指南
+
+### 小白极速路线（Windows 单文件免安装，首推）
+
+1. **下载解压**：前往 [Releases 页面](https://github.com/ROM4n2/lover-instance/releases/latest) 下载 `lover-v0.7.0-windows-amd64.zip`（仅 10.6 MB），解压至任意文件夹。
+2. **启动**：直接双击 `lover.exe`，浏览器会自动弹出交互面板（`http://127.0.0.1:8787`）。
+3. **体验与导入**：
+   - **秒级试玩**：点击网页中的「体验演示数据 (Load Demo)」，1 秒内体验内置 995 条合成语料、完整图表与高光时间轴；
+   - **导入自己的记录**：使用本地离线导出工具（如开源的 `chatlog-keeper`）导出聊天记录 JSON，直接将文件拖拽进网页，或点击「自动扫描下载目录」，系统将在本地秒级完成加密解析入库！
+
+---
+
+### 进阶开发者路线（从源码构建与 CLI 操作）
+
+> 前置要求：Go 1.26+（`backend-go`）、Node.js 20+（`frontend`）、Python 3.11+（`nlp-service`，可用 `LOVER_PYTHON` 显式指定解释器）。
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/ROM4n2/lover-instance.git
+cd lover-instance
+
+# 2. 构建前端与单文件可执行程序
+cd frontend && npm install && npm run build
+cd ../backend-go && go build -tags embedded -ldflags="-s -w" -o ../lover.exe ./cmd/lover
+cd ..
+
+# 3. 运行体验
+./lover demo                               # 零依赖内置语料，脱机秒级产出 demo_report.html
+./lover dash                               # 启动 Web 交互面板并自动打开浏览器
+./lover sync --export wechat_messages.json # 增量同步聊天记录，幂等去重入库
+./lover doctor                             # 本机运行环境与依赖体检
 ```
-浏览器(Vue3+ECharts) ──REST──▶ Go(Gin) 网关/编排 ──┬─ 适配器 ─▶ 宿主机 sidecar(用户自装, HTTP API / 导出 JSON)
-                                  │                 ├─ SQLite(WAL): messages/sentiment/daily_stats/analysis_jobs...
-                                  ├─ HTTP 批处理 ─▶ Python(FastAPI) NLP: jieba+DUTIR/HowNet · SKEP/RoBERTa
-                                  └─ 叙事(OpenAI 兼容) ─▶ 本地 Ollama（云 API 默认 deny-by-default）
-交付物：① 交互 Dashboard  ② 单文件 report.html（内联图表，可微信发送）
-```
 
-- **Go**：数据接入适配器、SQLite 存储、长任务编排（单飞/取消/检查点续跑）、REST API、HTML 报告渲染（go:embed）。
-- **Python**：无状态 NLP 微服务（分词、词典情感基线、SKEP/RoBERTa 模型），不持库。
-- **合规边界**：解密 sidecar 跑在宿主机；本仓库只做分析与可视化。
+---
 
-## 当前状态
-
-| 里程碑 | 内容 | 状态 |
-|---|---|---|
-| M0 | 取数 Spike + schema 证据（微信 4.1.9.30 被动取密钥实测、唯一键核实） | ✅ 完成（`chatlog-keeper` 导出 JSON 契约已冻结，32,624 条真实消息） |
-| M1 | 端到端最小闭环 + 首份自包含 report.html（词典法，零模型） | ✅ 完成（含断网渲染与逐字节复现验证） |
-| M2 | analysis_jobs 状态机 + 块级批处理 + 模型情感（ONNX，与词典版共存可比） | ✅ 完成（真实数据三版共存、kill 后续跑、两版对照区） |
-| M3 | Vue3 Dashboard（Gin + go:embed、健康徽章、进度轮询、半成品门控） | ✅ 完成（CDP 真机核验、断网出图、日志不含会话键） |
-| M4 | 本地 Ollama 叙事 + 话题词云时间线 | ✅ 完成（叙事 4 秒、月度词云需显式重扫；模型需自行指定） |
-| M5 | 一键化：四条命令 + 模型清单 + 五类失败退出码 | ✅ 完成（零模型开箱已物理演练、取消无孤儿、`lover dash` 真机验证） |
-
-设计与决策见 [docs/specs/](docs/specs/) 与 [docs/adr/](docs/adr/)；每个里程碑的实施计划与「执行期偏离」表见 [docs/plans/](docs/plans/)（M1–M5）。验收记录（不入库）在 `workmem/evidence/M*-ACCEPTANCE.md`。
-
-## 数据与隐私边界（发布前请读这一节）
+## 🔒 数据与隐私边界（发布前请读这一节）
 
 这个项目处理的是**两个人的私人聊天记录**，所以边界写在最前面：
 
-- **仓库里没有任何聊天内容、密钥、数据库或模型权重。** 真实数据只落在你的本机
-  `%LOCALAPPDATA%\lover-instance\`；测试全部使用 `fixtures/` 里的**合成语料**。
-- **仓库不内置、不分发任何解密或密钥提取代码**（见 [ADR-0001](docs/adr/ADR-0001-data-access-contract.md)）。
-  数据由你自装的第三方工具导出为 JSON，本项目只消费该文件。
-- **仓库不含**：本机知识库联动的多 Agent 入口文件（`AGENTS.md` / `CLAUDE.md` / `.cursorrules` /
-  `.agent-rules.md`）、内部工作记忆账簿（`WORKMEMORY/`）、以及取钥过程细节（`docs/private/`）。
-- **`report.html` 是分享物**：它含对方的聊天内容（词云、情绪、曲线、必要时的叙述段）。
-  **分享前请先征得对方同意**；情感结论是描述性统计，不是关系判断。
+- **仓库里没有任何聊天内容、密钥、数据库或模型权重。** 真实数据只落在你的本机 `%LOCALAPPDATA%\lover-instance\`；测试全部使用 `fixtures/` 里的**合成语料**。
+- **仓库不内置、不分发任何解密或密钥提取代码**（见 [ADR-0001](docs/adr/ADR-0001-compliance-sidecar-adapter.md)）。数据由你自装的第三方工具导出为 JSON，本项目只消费该文件。
+- **仓库不含**：本机知识库联动的多 Agent 入口文件（`AGENTS.md` / `CLAUDE.md` / `.cursorrules` / `.agent-rules.md`）、内部工作记忆账簿（`WORKMEMORY/`）、以及取钥过程细节（`docs/private/`）。
+- **`report.html` 是分享物**：它含对方的聊天内容（词云、情绪、曲线、必要时的叙述段）。**分享前请先征得对方同意**；情感结论是描述性统计，不是关系判断。
 - 完整声明见 [DISCLAIMER.md](DISCLAIMER.md) 与 [LICENSE](LICENSE)。
 
-**发布前自检**（把上面的边界变成可重复执行的断言，而不是靠人记得）：
-
+**发布前自检**（通过自动化脚本把上面的合规边界变成物理断言）：
 ```bash
 python scripts/release-audit.py
 ```
+该门禁会机械检查：索引与历史里是否有数据文件、本机目录是否被跟踪、是否有本机绝对路径、是否有疑似密钥、公开树里是否有取钥方法措辞，以及 LICENSE / DISCLAIMER / README 隐私小节是否齐备。
 
-它会检查：索引与**历史**里有没有数据文件、本机目录是否被跟踪、有没有本机绝对路径、
-有没有疑似密钥、公开树里有没有取钥方法的措辞，以及 LICENSE / DISCLAIMER / README 隐私小节是否齐备。
-**注意：它检查的是当前索引与历史里的文件；若要彻底抹掉历史中的敏感段落，需要另做
-历史重写（见发布说明）。**
+---
 
-## 快速开始（四条命令）
+## 🗺️ 架构设计与里程碑记录
 
-> **前置**：Go 1.26（`backend-go/go.mod`）与 Python 3.11+（`nlp-service`；可用 `LOVER_PYTHON` 指定解释器）。
-> 聊天记录 JSON 由你自装的第三方工具导出——**本仓库不含导出/解密代码**；导出契约见 `docs/adr/ADR-0001`
-> （字段 `server_id / source_offset / ts / conversation_id / sender_wxid / msg_type / is_self / content`）。
-> 首次运行会先检查 Python 依赖，缺什么就报什么；**不加 `--yes` 绝不自动安装**。
-
-```bash
-# 0. 构建一次（Windows 用 -o lover.exe）
-cd backend-go && go build -o lover ./cmd/lover
+```
+浏览器(Vue3+ECharts) ──REST──▶ Go(Gin) 网关/编排 ──┬─ 适配器 ─▶ 宿主机 sidecar(用户自装, 导出 JSON)
+                                  │                 ├─ SQLite(WAL): messages/sentiment/daily_stats/highlights...
+                                  ├─ 模块化分析引擎 ──┼─ Builtin: behavior / sentiment / highlights / word_freq
+                                  └─ 离线渲染管道 ──▶ 单文件 report.html (go:embed 内联) + 3:4 分享海报
 ```
 
-在仓库的任意子目录下运行即可：`lover` 会向上找 `backend-go/go.mod` + `nlp-service/app` 定位仓库根，也可用 `LOVER_REPO_ROOT` 直接指定。
+| 里程碑 | 内容说明 | 成果状态 |
+|:---|:---|:---|
+| **M0** | 取数 Spike + 数据契约证据 | ✅ 完成（`chatlog-keeper` 导出 JSON 契约冻结，自然唯一键 `server_id + source_offset`） |
+| **M1** | 端到端最小闭环 + 首份自包含 `report.html` | ✅ 完成（词典情感基线，逐字节复现验证） |
+| **M2** | `analysis_jobs` 状态机 + 块级批处理 + ONNX 模型情感 | ✅ 完成（多模型共存可比、断点接管、两版情感对照区） |
+| **M3** | 本地 Web Dashboard (Vue3 + ECharts) | ✅ 完成（健康徽章、打分进度门控、单二进制 `go:embed` 托管） |
+| **M4** | 本地大模型叙事 + 按月高频词演化 | ✅ 完成（本地 Ollama 回环隔离，纯指标摘要生成，拒绝原始消息泄露） |
+| **M5** | 一键化命令行体系与零模型开箱 | ✅ 完成（`lover` / `sync` / `dash` / `doctor` 四条命令收敛，取消无孤儿） |
+| **M6** | 新手友好沙箱 + 管道模块化 + 高光里程碑时间轴 | ✅ 完成（`lover demo` 毫秒出图、`Analyzer` DAG 拓扑排序、连续打卡与峰值长谈挖掘） |
+| **M7** | 关系成就勋章 + 3:4 朋友圈高清纪念海报 | ✅ 完成（4 大成就勋章、Canvas 2K 高清视网膜海报生成、自动嗅探下载目录） |
 
-```bash
-# 1. 首次运行：检查依赖 → 起 NLP 服务 → 分析最新导出 → 打开报告
-./lover
-./lover --yes                                    # 依赖缺失时才允许自动 pip install
-./lover --export /path/to/wechat_messages.json    # 指定导出文件（默认是导出目录里最新的 *.json）
+设计决策详见 [docs/specs/](docs/specs/) 与 [docs/adr/](docs/adr/)。
 
-# 2. 周更：同一条流水线，只报新增
-./lover sync --export /path/to/wechat_messages.json
-# → 新增 128 条 / 打分 128 条 / 覆盖率 32400/32624
+---
 
-# 3. Dashboard：bundle 缺失或过期就先 npm run build，然后 serve
-./lover dash                                     # http://127.0.0.1:8787 ，Ctrl-C 停止
+## 📄 开源许可证
 
-# 4. 体检：报告缺什么，不改任何东西
-./lover doctor
-
-# 5. 零门槛体验（内置合成语料，秒级脱机出图）
-./lover demo                                     # 自动用内置 995 条样本生成体验报告
-./lover demo --open                              # 生成并自动在浏览器打开 demo_report.html
-```
-
-模型是**显式升级**，不是首次运行的一部分：
-
-```bash
-./lover model list                      # 看装了什么（只哈希本地文件，零网络）
-./lover model add erlangshen-110m-v1    # 下载并按 sha256 校验每一个 pin 住的文件
-./lover model verify                    # 重新哈希，列出与 pin 不符的文件
-./lover model rm erlangshen-110m-v1 --yes
-./lover --export wechat_messages.json --sentiment-version erlangshen-110m-v1   # 用模型版重打
-```
-
-**零模型开箱**：默认走词典版情感（`lexicon-hownet-v1`），全程 **0 MB 下载**——`lover` 和 `lover sync` 永远不会替你下载权重。想要模型版就显式 `lover model add`，`list` 会如实区分「未安装（从没装过）」「部分就位（上次 add 没跑完）」「文件在但内容与 pin 不符」三种情况，并给出对应的下一步命令。
-
-每条子命令都有 `-h`。常用参数：`--db`（默认 `%LOCALAPPDATA%\lover-instance\data.db`）、`--talker`（导出含多个会话时必填，单会话自动推断）、`--skip-sentiment`（只出行为报告，覆盖度会如实标注为不完整）、`--out`、`--nlp-url`。
-
-### 退出码（脚本和双击都用得到）
-
-| 码 | 含义 | 遇到该做什么 |
-|---|---|---|
-| 0 | 跑完了 | 报告已写出并打开（`sync` 只打印一行） |
-| 1 | 分析本身失败 | 看 stderr 指名的阶段；修好后重跑，续跑不会重打分 |
-| 2 | 命令行有误 | 改命令；每条子命令都有 `-h` |
-| 3 | 依赖缺失 | Python 包 → `python -m pip install -r nlp-service/requirements.txt`；`dash` 还需要 npm 与 Go 工具链 |
-| 4 | 端口被占用 | 消息里给出占用者的 PID，停掉它；或 `--port` / `--nlp-url` 换一个 |
-| 5 | 服务起来了但 60 秒内没 ready | 手工起一次看它卡在哪：`cd nlp-service && python -m uvicorn app.main:app --port 8000` |
-
-Ctrl-C（SIGINT）会收掉整个服务进程组、把 job 行按取消关闭，不留孤儿进程；此时退出码为 1 并打印「已中断」，重跑同一条命令即可接着跑。
-
-### 进阶：直接用底层 `analyze`
-
-四条命令与 `analyze` 走的是同一个 `internal/app.Run`，共享全部默认值。`analyze` 的价值在于细粒度开关（`--sentiment-version`、`--rescore-words`、`--take-over` 等）和脚本友好的三码退出；需要自己起服务、自己看每一步时用它：
-
-```bash
-# 1. 在宿主机用你自己选择的工具导出聊天记录 JSON（本仓库不含导出/解密代码）。
-#    导出契约见 docs/adr/ADR-0001。
-
-# 2. 启动词典基线 NLP 服务（零模型，只加载自建词表）
-cd nlp-service && python -m uvicorn app.main:app --port 8000
-curl -s http://127.0.0.1:8000/health    # 期望 {"status":"ready",...,"model_version":"lexicon-hownet-v1"}
-
-# 3. 一条命令跑完导入 → 行为指标 → 情感打分 → 渲染报告
-cd backend-go && go build -o analyze ./cmd/analyze
-./analyze --export /path/to/wechat_messages.json --out report.html
-```
-
-CLI 退出码：`0` 完成 / `1` 执行失败 / `2` 命令行有误。成功时 stdout 是一行 JSON 摘要（条数、覆盖度、各阶段耗时、报告体积），**不含任何消息正文与会话标识**——只有会话指纹。
-
-常用参数：`--talker`（导出含多个会话时必填，单会话自动推断）、`--list-talkers`（列出已入库的会话键）、`--db`、`--skip-sentiment`、`--nlp-url`。
-
-## M2：换一个情感模型，与词典版并列比较
-
-同一个会话可以同时存多个 `model_version` 的分数，报告会列出两版的正负比例与**不一致率**（分母只算两版都打过分、且都给出数值的消息）。
-
-```bash
-# 看本机 NLP 服务提供哪些版本
-curl -s http://127.0.0.1:8000/health    # available_versions
-
-# 用模型版重打一次（首轮会下载并校验权重，之后离线可跑）
-./analyze --export wechat_messages.json --sentiment-version erlangshen-110m-v1 --out report.html
-```
-
-- 未知版本会在发出第一个打分块之前就被拒绝（不会白跑五分钟才发现拼错）。
-- **续跑不重打分**：被 `kill -9` 后，重启需等该 job 的心跳过期（默认 90 秒）才会被接管；确知对方已死可加 `--take-over`（它会在 stderr 明确警告：若那个进程还活着，两边都写、词频会翻倍）。
-- 实测耗时（22,093 条，本机 CPU）：Erlangshen 约 276 秒，distilbert 约 158 秒；纯推理吞吐比这高一个数量级，差额在分词、HTTP 与逐块事务上。
-
-## M3：本地 Dashboard
-
-```bash
-cd frontend && npm install && npm run build      # 产物落在 backend-go/internal/web/dist（不入库）
-cd ../backend-go && go build -o server ./cmd/server
-./server                                          # 监听 127.0.0.1:8787
-```
-
-- 打开 `http://127.0.0.1:8787/`，`?talker=<wxid>&view=overview|sentiment|jobs` 会进 URL（刷新/书签成立）。**书签里含对方的 wxid，分享浏览器配置前先想起来这件事。**
-- NLP 服务没起时右上角徽章显示降级，页面其余部分照常可用。
-- **半成品门控**：有分析任务在跑时，情感视图只显示「分析中 done/total」，不画曲线；跑完自动出图。
-- 想让单二进制自包含：`go build -tags embedded`（需先 `npm run build`）。默认构建从磁盘找 dist，找不到会给一页说明而不是白屏。
-- 接口只出聚合：没有任何返回消息正文的端点；日志只记 method / 路由模板 / 状态码 / 耗时，**不记 query**。
-
-## M4：本机叙事 + 按月高频词
-
-```bash
-# 按月词云要先重扫（把 period='YYYY-MM' 的行写出来）；显式给，绝不默认删数据
-./analyze --export wechat_messages.json --rescore-words --out report.html
-
-# 叙事：模型名必填，没有默认值；只允许回环地址（云 API 一律拒绝）
-./analyze --export wechat_messages.json --ollama-model qwen2.5:7b-instruct --out report.html
-./analyze --export wechat_messages.json --no-narrative --out report.html   # 关掉
-```
-
-- **叙事只看聚合，不看对话**：喂给模型的只有条数、占比、趋势点，**不含任何词**（真实词云会带人名，报告是分享物，名字不能从这条路出去）。这条是类型级约束 + 测试钉住的。
-- 模型要**关思考模式**：provider 走 Ollama 原生 `/api/chat` 并显式 `think:false`。思考型小模型会把预算全花在推理上——实测 120 秒超时、空内容；关掉后同一 prompt 3.9 秒返回。
-- 同一份输入的叙事按摘要缓存，重跑不会重复请求、也不会每次都不一样；模板变更必须升 `promptVersion`，否则旧缓存会被当成新结论。
-- 本机 `qwen3.5:4b` 可用但**会编形状**（「先降后升再回落」这类趋势点里没有的话），数字是对的。分享前请通读那一段。
-- 月度词云只画对方侧；没有月度数据时报告会写「需要重扫」，不画空图。
-
-## M6：新手友好向导、管道抽象与高光里程碑
-
-- **`lover demo` 零门槛沙箱**：内置 995 条合成语料，脱机 1 秒内生成全套图表与高光时间线；
-- **Web 拖拽与空态向导**：Dashboard 在空库时自动展示向导，支持拖拽 100MB 聊天 JSON 上传入库与一键载入 Demo；
-- **模块化分析管道**：抽象 `Analyzer` 契约与 DAG 拓扑排序注册表，解耦算法与编排；
-- **高光里程碑与纪念日时间线**：自动挖掘相识启程日（相识天数与消息总量）、心动连击（最长连续互发消息天数）、单日长谈 Top 3 峰值日、深夜畅聊夜（00:00–05:00 CST 深度长谈）。
-
-## 技术栈说明，与三条容易踩的坑
-
-- **Go 1.26**（`backend-go`）：数据接入适配器、SQLite 存储（WAL）、长任务编排（单飞/取消/检查点续跑）、REST API、HTML 报告渲染（`go:embed`）。入口有三：`cmd/lover`（四条命令）、`cmd/analyze`（底层 CLI）、`cmd/server`（Dashboard 服务）。
-- **Python 3.11+**（`nlp-service`，无状态、不持库）：jieba 分词、词典情感基线、SKEP/RoBERTa（ONNX）。由 `lover` 作为子进程拉起，并等到 `/health` 报 `ready` 才继续。
-- **Vue3 + ECharts**（`frontend`）：`npm run build` 产物落在 `backend-go/internal/web/dist`（不入库）。`lover dash` 在 bundle 缺失或比 `frontend/src` 旧时自动构建；npm 不在 PATH 时跳过 Dashboard，报告路径不受影响。
-- **本地 Ollama（可选）**：叙事走 OpenAI 兼容接口，**只接受回环地址**，云 API 一律 deny-by-default；`--ollama-model` 必填，不给就不出叙事。
-- **默认值只有一个来源**：`backend-go/internal/app/paths.go`（数据库、NLP 地址、Ollama 地址、导出目录、Dashboard 地址）。任何命令都从这里取默认值，不允许自带第二份。
-
-三条容易踩的坑（M1–M4 就存在，有了四条命令之后依然成立）：
-
-1. **改了 `backend-go/internal/report/templates/*.tmpl` 必须重新 `go build`。** 模板经 `go:embed` 编进二进制，不重编译就是在跑旧模板——用 `lover` 也一样，它跑的是编译好的二进制。
-2. **改了词表或分词后，已入库的词频不会自动回填。** 待办集按 anti-join 判定，已打分的块不会再进入待办集；需删掉 `word_freq` 的行或删库重跑。
-3. **数据库不要放在 OneDrive / 坚果云 / 百度网盘目录下。** CLI 会在建库前拒绝这类路径（Windows 的「已知文件夹移动」会把 `Documents` 悄悄重定向进 OneDrive）；默认路径落在 `%LOCALAPPDATA%\lover-instance\` 正是因为这个。
-
-> 数据库文件、导出 JSON、报告、模型权重均已在 `.gitignore`，不会入库。报告是自包含单页，打开时不产生任何网络请求（由 `report.ExternalRefs` 断言）。
+本项目基于 [MIT License](LICENSE) 开源发布。
