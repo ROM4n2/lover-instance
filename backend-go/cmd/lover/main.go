@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 
@@ -205,6 +206,9 @@ func isRepoRoot(dir string) bool {
 func pythonCommand() string {
 	if env := os.Getenv("LOVER_PYTHON"); env != "" {
 		return env
+	}
+	if _, err := exec.LookPath("python3"); err == nil {
+		return "python3"
 	}
 	return "python"
 }

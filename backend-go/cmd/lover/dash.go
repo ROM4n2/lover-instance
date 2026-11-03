@@ -136,6 +136,22 @@ func runDash(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitEnv
 	}
 
+	nlpP := nlpPort(cfg.nlpURL)
+	if nlpP != "" {
+		if err := ensurePortFree("the NLP service", nlpP); err == nil {
+			python := pythonCommand()
+			serviceDir := filepath.Join(root, "nlp-service")
+			if missing, _ := probeDependencies(ctx, python, serviceDir, dependencyModules); len(missing) == 0 {
+				svc, err := startService(ctx, serviceConfig{python: python, port: nlpP, dir: serviceDir, stderr: stderr})
+				if err == nil {
+					defer svc.stop()
+					fmt.Fprintf(stderr, "lover: started the NLP service on port %s\n", nlpP)
+					_ = svc.waitReady(ctx, cfg.nlpURL, serviceReadyTimeout)
+				}
+			}
+		}
+	}
+
 	server, err := startDashboardServer(ctx, cfg, root, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "lover: %v\n", err)

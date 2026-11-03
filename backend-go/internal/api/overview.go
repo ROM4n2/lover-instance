@@ -111,18 +111,32 @@ func overviewHandler(opts Options) gin.HandlerFunc {
 // must not turn a wrong guess into a report about the wrong person, and it must
 // not put a wxid in a body either.
 func resolveTalker(ctx context.Context, requested string, s *store.Store) (string, *apiFailure) {
-	if requested != "" {
-		return requested, nil
-	}
 	talkers, err := s.ListTalkers(ctx)
 	if err != nil {
 		return "", fail(http.StatusInternalServerError, "internal",
 			"the stored conversations could not be listed",
 			"retry the request; if it keeps failing, check /api/health")
 	}
+
+	if requested != "" {
+		for _, t := range talkers {
+			if t == requested {
+				return t, nil
+			}
+		}
+		for _, t := range talkers {
+			if report.TalkerHash(t) == requested {
+				return t, nil
+			}
+		}
+		return "", fail(http.StatusNotFound, "unknown_talker",
+			"no conversation matches the requested talker or fingerprint",
+			"use a valid talker wxid or fingerprint")
+	}
+
 	switch len(talkers) {
 	case 0:
-		return "", fail(http.StatusBadRequest, "talker_required",
+		return "", fail(http.StatusBadRequest, "empty_database",
 			"no conversation has been imported into this database yet",
 			"import an export with the analyze command first, then reopen the dashboard")
 	case 1:

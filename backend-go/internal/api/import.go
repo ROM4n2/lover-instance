@@ -81,19 +81,32 @@ func scanExportHandler(opts Options) gin.HandlerFunc {
 			if err != nil {
 				continue
 			}
+			var checkPaths []string
 			for _, entry := range entries {
-				if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
-					continue
+				full := filepath.Join(dir, entry.Name())
+				if entry.IsDir() {
+					subEntries, subErr := os.ReadDir(full)
+					if subErr == nil {
+						for _, sub := range subEntries {
+							if !sub.IsDir() && strings.HasSuffix(strings.ToLower(sub.Name()), ".json") {
+								checkPaths = append(checkPaths, filepath.Join(full, sub.Name()))
+							}
+						}
+					}
+				} else if strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+					checkPaths = append(checkPaths, full)
 				}
-				info, err := entry.Info()
+			}
+
+			for _, p := range checkPaths {
+				info, err := os.Stat(p)
 				if err != nil || info.Size() < 50 {
 					continue
 				}
-				full := filepath.Join(dir, entry.Name())
-				if isCandidateExport(full) {
+				if isCandidateExport(p) {
 					if info.ModTime().After(newestMod) {
 						newestMod = info.ModTime()
-						newestPath = full
+						newestPath = p
 						newestSize = info.Size()
 					}
 				}

@@ -90,7 +90,7 @@ const overview = ref(null)
 const overviewError = ref(null)
 
 const isEmptyDB = computed(() => {
-  return !overview.value && overviewError.value && overviewError.value.code === 'talker_required'
+  return !overview.value && overviewError.value && overviewError.value.code === 'empty_database'
 })
 
 let healthTimer = null
@@ -118,8 +118,22 @@ async function loadOverview({ silent = false } = {}) {
   try {
     const data = await api.getOverview(talker.value)
     overview.value = data
+    if (data && data.talker_hash && !talker.value) {
+      talker.value = data.talker_hash
+      talkerInput.value = data.talker_hash
+      writeState({ view: view.value, talker: talker.value }, { push: false })
+    }
     syncProgressPolling()
   } catch (error) {
+    if (error.code === 'talker_required' && !talker.value && error.hint) {
+      const match = error.hint.match(/\?talker=:\s*([a-f0-9]{16})/)
+      if (match && match[1]) {
+        talker.value = match[1]
+        talkerInput.value = match[1]
+        writeState({ view: view.value, talker: talker.value }, { push: false })
+        return loadOverview({ silent })
+      }
+    }
     if (!silent) overviewError.value = error
   }
 }
