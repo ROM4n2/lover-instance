@@ -224,3 +224,19 @@ func TestOverview_ReportsAnActiveRunAsAbsoluteCounts(t *testing.T) {
 		t.Errorf("body = %s, want no raw talker", recorder.Body)
 	}
 }
+
+func TestOverview_SucceedsWhenNLPUnreachableAndAlreadyScored(t *testing.T) {
+	s := testStore(t)
+	engine := New(Options{Store: s, NLPURL: "http://127.0.0.1:1", Version: "test", Log: io.Discard})
+
+	const talker = "wxid_scored"
+	seedText(t, s, "k1", talker, testBaseMs, true, "hello")
+	_ = s.SaveScoredBlock(context.Background(), talker, "lexicon-v1", store.AllPeriod, []store.SentimentRow{
+		{MsgID: 1, Polarity: 0.5, Emotion: "好", Intensity: 0.5},
+	}, nil, nil, nil)
+
+	recorder := do(t, engine, http.MethodGet, "/api/overview", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK when NLP unreachable with stored scores, got %d: %s", recorder.Code, recorder.Body)
+	}
+}

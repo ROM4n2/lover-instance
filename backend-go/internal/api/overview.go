@@ -67,7 +67,7 @@ func overviewHandler(opts Options) gin.HandlerFunc {
 			failure.write(c)
 			return
 		}
-		version, failure := sentimentVersion(ctx, opts, c.Query("model_version"))
+		version, failure := sentimentVersion(ctx, opts, c.Query("model_version"), talker)
 		if failure != nil {
 			failure.write(c)
 			return
@@ -148,34 +148,51 @@ func resolveTalker(ctx context.Context, requested string, s *store.Store) (strin
 // A version the service does not advertise is refused before any work starts.
 // Letting it through would surface as a 400 from the scoring service in the
 // middle of a long pass, after a job row had already been written.
-func sentimentVersion(ctx context.Context, opts Options, requested string) (string, *apiFailure) {
+func sentimentVersion(ctx context.Context, opts Options, requested, talker string) (string, *apiFailure) {
 	probeCtx, cancel := context.WithTimeout(ctx, modelProbeTimeout)
 	defer cancel()
 
 	client, err := nlp.NewClient(opts.NLPURL)
-	if err != nil {
-		return "", nlpUnreachableFailure()
-	}
-	health, err := client.Health(probeCtx)
-	if err != nil {
-		return "", nlpUnreachableFailure()
+	if err == nil {
+		health, err := client.Health(probeCtx)
+		if err == nil {
+			if requested != "" {
+				if !offersVersion(health.AvailableVersions, requested) {
+					return "", fail(http.StatusBadRequest, "unknown_model_version",
+						"the sentiment service does not offer the requested model version",
+						"the versions it does offer are: "+strings.Join(health.AvailableVersions, ", "))
+				}
+				return requested, nil
+			}
+			if health.ModelVersion != "" {
+				return health.ModelVersion, nil
+			}
+		}
 	}
 
-	if requested != "" {
-		if !offersVersion(health.AvailableVersions, requested) {
-			return "", fail(http.StatusBadRequest, "unknown_model_version",
-				"the sentiment service does not offer the requested model version",
-				"the versions it does offer are: "+strings.Join(health.AvailableVersions, ", "))
+	// When NLP service is unreachable:
+	// 1. If this conversation was already scored in the database, reuse the version that scored it.
+	if opts.Store != nil && talker != "" {
+		versions, err := opts.Store.SentimentVersions(ctx, talker)
+		if err == nil && len(versions) > 0 {
+			if requested != "" {
+				for _, v := range versions {
+					if v == requested {
+						return requested, nil
+					}
+				}
+			} else {
+				return versions[0], nil
+			}
 		}
-		return requested, nil
 	}
-	if health.ModelVersion == "" {
-		// The service is up but has not finished loading a lexicon. Scoring
-		// would fail on the first block and the report would have no version
-		// to name, so this is answered as "not available yet".
-		return "", nlpUnreachableFailure()
+
+	// 2. If no requested version and no stored version, permit an offline view with no sentiment scores.
+	if requested == "" {
+		return "", nil
 	}
-	return health.ModelVersion, nil
+
+	return "", nlpUnreachableFailure()
 }
 
 // offersVersion reports whether version is on the service's menu.

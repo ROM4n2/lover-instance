@@ -346,9 +346,13 @@ func jobsCreateHandler(opts Options) gin.HandlerFunc {
 			failure.write(c)
 			return
 		}
-		version, failure := sentimentVersion(ctx, opts, request.ModelVersion)
+		version, failure := sentimentVersion(ctx, opts, request.ModelVersion, talker)
 		if failure != nil {
 			failure.write(c)
+			return
+		}
+		if version == "" {
+			nlpUnreachableFailure().write(c)
 			return
 		}
 		if opts.manager == nil {
