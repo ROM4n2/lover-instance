@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -207,6 +208,12 @@ func runFirstRun(ctx context.Context, args []string, stdout, stderr io.Writer, s
 	//    else already did.
 	var service *child
 	if !cfg.external {
+		checkClient := &http.Client{Timeout: 500 * time.Millisecond}
+		if resp, err := checkClient.Get(cfg.opts.NLPURL + "/health"); err == nil && resp.StatusCode == http.StatusOK {
+			_ = resp.Body.Close()
+			goto serviceReady
+		}
+
 		if err := ensurePortFree("the NLP service", cfg.port); err != nil {
 			fmt.Fprintf(stderr, "lover: %v\n", err)
 			if asPortError(err) {
@@ -229,6 +236,7 @@ func runFirstRun(ctx context.Context, args []string, stdout, stderr io.Writer, s
 			return exitService
 		}
 	}
+serviceReady:
 
 	// 3. The export. Without one there is nothing to analyze on an uninitialized
 	//    database, but an existing database can be re-analyzed without a new export.
