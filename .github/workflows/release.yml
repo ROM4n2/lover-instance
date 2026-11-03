@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release Binary
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build Frontend Assets
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Standalone Windows Executable
+        working-directory: ./backend-go
+        run: |
+          go build -tags embedded -ldflags="-s -w" -o ../lover.exe ./cmd/lover
+
+      - name: Package Release ZIP
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME
+          if (-not $ver) { $ver = "v0.7.0" }
+          $pkgDir = "dist_release/lover-$ver-windows-amd64"
+          New-Item -ItemType Directory -Path $pkgDir -Force
+          Copy-Item "lover.exe" -Destination "$pkgDir/"
+          Copy-Item "README.md" -Destination "$pkgDir/README.txt"
+          Copy-Item "LICENSE" -Destination "$pkgDir/"
+          Copy-Item "DISCLAIMER.md" -Destination "$pkgDir/"
+          
+          @"
+          ==================================================
+             Lover Instance - 双人微信聊天关系复盘平台
+          ==================================================
+
+          【极简新手指南】
+          1. 双击运行 lover.exe：
+             浏览器会自动弹出交互面板（http://127.0.0.1:8787）。
+
+          2. 体验演示数据：
+             点击网页上的「体验演示数据 (Load Demo)」，即可 1 秒内体验
+             内置 995 条真实脱敏语料、图表、高光时间轴与成就勋章。
+
+          3. 导入真实聊天记录：
+             将外部工具导出的 wechat_messages.json 文件直接拖入网页，
+             或点击「自动扫描下载目录」，系统将自动完成本地隐私加密解析。
+
+          4. 分享朋友圈 / 小红书：
+             在「高光」选项卡点击「生成分享卡片」，一键下载 3:4 高清纪念海报！
+
+          【数据安全承诺】
+          本软件为纯本地离线单机工具，数据 100% 存储在你的电脑本地，
+          绝对零云端上传，零外链，零隐私泄露。
+          "@ | Out-File -FilePath "$pkgDir/使用说明.txt" -Encoding utf8
+
+          Compress-Archive -Path "$pkgDir/*" -DestinationPath "dist_release/lover-$ver-windows-amd64.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist_release/*.zip
+          generate_release_notes: true
