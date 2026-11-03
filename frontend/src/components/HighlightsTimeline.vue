@@ -216,31 +216,36 @@ function renderCanvas() {
 
     drawRoundRect(ctx, 80, badgeY, 920, 78, 16, bgCol, borderCol, isGold ? 1.5 : 1)
 
-    // Icon
-    ctx.font = '34px sans-serif'
+    // Dedicated circular container for icon
+    drawRoundRect(ctx, 98, badgeY + 14, 50, 50, 25, isGold ? 'rgba(234, 179, 8, 0.16)' : 'rgba(255, 255, 255, 0.08)', isGold ? 'rgba(234, 179, 8, 0.4)' : 'rgba(255, 255, 255, 0.15)', 1)
+
+    // Icon (explicit emoji font + middle baseline prevents blur & clipping)
+    ctx.font = '28px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif'
     ctx.textAlign = 'center'
-    ctx.fillText(b.icon || '🏅', 130, badgeY + 52)
+    ctx.textBaseline = 'middle'
+    ctx.fillText(b.icon || '🏅', 123, badgeY + 40)
 
     // Title
     ctx.textAlign = 'left'
-    ctx.font = 'bold 21px -apple-system, sans-serif'
+    ctx.textBaseline = 'middle'
+    ctx.font = 'bold 21px -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif'
     ctx.fillStyle = '#ffffff'
-    ctx.fillText(b.title || '', 180, badgeY + 34)
+    ctx.fillText(b.title || '', 170, badgeY + 28)
 
-    // Subtitle Pill
+    // Subtitle Pill (dynamically positioned after title)
     const titleWidth = ctx.measureText(b.title || '').width
-    const subX = 195 + titleWidth
+    const subX = 185 + titleWidth
     const subText = b.subtitle || ''
-    ctx.font = '14px sans-serif'
-    const subW = ctx.measureText(subText).width + 24
-    drawRoundRect(ctx, subX, badgeY + 16, subW, 24, 12, 'rgba(255, 255, 255, 0.08)', null)
+    ctx.font = '14px -apple-system, sans-serif'
+    const subW = ctx.measureText(subText).width + 20
+    drawRoundRect(ctx, subX, badgeY + 16, subW, 24, 12, isGold ? 'rgba(234, 179, 8, 0.16)' : 'rgba(255, 255, 255, 0.08)', null)
     ctx.fillStyle = isGold ? '#fef08a' : '#cbd5e1'
-    ctx.fillText(subText, subX + 12, badgeY + 33)
+    ctx.fillText(subText, subX + 10, badgeY + 28)
 
-    // Description (on its own line)
-    ctx.font = '15px sans-serif'
+    // Description (on its own clean line below)
+    ctx.font = '15px -apple-system, sans-serif'
     ctx.fillStyle = '#94a3b8'
-    ctx.fillText(b.description || '', 180, badgeY + 62)
+    ctx.fillText(b.description || '', 170, badgeY + 56)
 
     badgeY += 94
   }
@@ -249,6 +254,7 @@ function renderCanvas() {
   let hlY = 825
   ctx.fillStyle = '#f8fafc'
   ctx.font = 'bold 24px -apple-system, sans-serif'
+  ctx.textBaseline = 'alphabetic'
   ctx.fillText('✨ 标志性长谈与高光时刻', 90, hlY)
 
   hlY += 35
@@ -262,22 +268,24 @@ function renderCanvas() {
     const dateW = Math.max(130, ctx.measureText(dateText).width + 24)
     drawRoundRect(ctx, 100, hlY + 16, dateW, 26, 13, 'rgba(56, 189, 248, 0.15)', 'rgba(56, 189, 248, 0.4)', 1)
     ctx.fillStyle = '#38bdf8'
-    ctx.fillText(dateText, 112, hlY + 34)
+    ctx.textBaseline = 'middle'
+    ctx.fillText(dateText, 112, hlY + 30)
 
     // Title (cleanly placed AFTER the date pill)
     ctx.font = 'bold 19px -apple-system, sans-serif'
     ctx.fillStyle = '#ffffff'
-    ctx.fillText(ev.title || '', 115 + dateW, hlY + 35)
+    ctx.fillText(ev.title || '', 115 + dateW, hlY + 30)
 
     // Description (on its own line below)
     ctx.font = '15px -apple-system, sans-serif'
     ctx.fillStyle = '#94a3b8'
-    ctx.fillText(ev.description || '', 100, hlY + 68)
+    ctx.fillText(ev.description || '', 100, hlY + 62)
 
     hlY += 102
   }
 
   // 6. Footer Section
+  ctx.textBaseline = 'alphabetic'
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'
   ctx.lineWidth = 1
   ctx.beginPath()
