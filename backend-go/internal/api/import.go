@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -177,4 +178,69 @@ func isCandidateExport(path string) bool {
 	n, _ := f.Read(buf)
 	prefix := string(buf[:n])
 	return strings.Contains(prefix, "conversation_id") || strings.Contains(prefix, "msg_type") || strings.Contains(prefix, "sender")
+}
+
+func syncSidecarHandler(opts Options) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+		talker, _ := resolveTalker(ctx, c.Query("talker"), opts.Store)
+
+		python := "python3"
+		if p := os.Getenv("LOVER_PYTHON"); p != "" {
+			python = p
+		}
+
+		args := []string{"-m", "chatlog_keeper.cli", "wechat", "--lover", "--days=30"}
+		if talker != "" {
+			args = append(args, "--conversation", talker)
+		}
+
+		cmd := exec.CommandContext(ctx, python, args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if path, lookErr := exec.LookPath("chatlog-keeper"); lookErr == nil {
+				cmd = exec.CommandContext(ctx, path, "wechat", "--lover", "--days=30")
+				if talker != "" {
+					cmd.Args = append(cmd.Args, "--conversation", talker)
+				}
+				out, err = cmd.CombinedOutput()
+			}
+		}
+
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "sidecar_failed",
+				"微信聊天记录自动导出失败（请确保电脑已登录微信）", string(out))
+			return
+		}
+
+		exportPath := filepath.Join(app.ExportsDir(), "auto_sync", "wechat_messages.json")
+		file, err := os.Open(exportPath)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "open_failed", "未找到导出的消息文件", err.Error())
+			return
+		}
+		defer file.Close()
+
+		imported, err := ingest.Run(ctx, opts.Store, ingest.Options{
+			Source: "chatlog-keeper",
+			Reader: file,
+		})
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "ingest_failed", "导入最新消息失败", err.Error())
+			return
+		}
+
+		ha := &analyze.HighlightsAnalyzer{}
+		for _, t := range imported.Talkers {
+			_ = opts.Store.RebuildBehaviorMetrics(ctx, t)
+			_ = ha.Run(ctx, opts.Store, analyze.Options{Talker: t}, nil)
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"ok":       true,
+			"talkers":  imported.Talkers,
+			"inserted": imported.Inserted,
+			"parsed":   imported.Parsed,
+		})
+	}
 }

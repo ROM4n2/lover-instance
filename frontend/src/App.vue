@@ -16,6 +16,16 @@
           @keyup.enter="applyTalker"
           @blur="applyTalker"
         />
+        <el-button
+          type="primary"
+          plain
+          size="small"
+          :loading="syncing"
+          style="margin-left: 10px"
+          @click="handleSyncSidecar"
+        >
+          ⚡ 同步微信记录
+        </el-button>
       </label>
 
       <nav class="tabs">
@@ -65,6 +75,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import * as api from './api'
 import { normalizeView, readState, writeState } from './useUrlState'
 import HealthBadge from './components/HealthBadge.vue'
@@ -88,6 +99,20 @@ const talkerInput = ref('')
 const health = ref(null)
 const overview = ref(null)
 const overviewError = ref(null)
+const syncing = ref(false)
+
+async function handleSyncSidecar() {
+  syncing.value = true
+  try {
+    const res = await api.syncSidecar(talker.value)
+    ElMessage.success(`同步完成！解析 ${res.parsed || 0} 条消息，新增 ${res.inserted || 0} 条`)
+    await refreshAll()
+  } catch (err) {
+    ElMessage.error(err.message || '微信同步失败：请确保电脑已登录微信')
+  } finally {
+    syncing.value = false
+  }
+}
 
 const isEmptyDB = computed(() => {
   return !overview.value && overviewError.value && overviewError.value.code === 'empty_database'

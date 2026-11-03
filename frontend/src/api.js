@@ -78,6 +78,13 @@ export function scanExport(autoImport = false) {
   return request(`/scan-export${autoImport ? '?import=true' : ''}`, { method: 'POST' })
 }
 
+export function syncSidecar(talker) {
+  const params = new URLSearchParams()
+  if (talker) params.set('talker', talker)
+  const query = params.toString()
+  return request(`/sync-sidecar${query ? `?${query}` : ''}`, { method: 'POST' })
+}
+
 export async function uploadExport(file) {
   const form = new FormData()
   form.append('file', file)

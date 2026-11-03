@@ -85,6 +85,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runDoctor(ctx, args[1:], stdout, stderr)
 	case "demo":
 		return runDemo(ctx, args[1:], stdout, stderr)
+	case "pull":
+		return runPull(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stderr)
 		return exitOK
@@ -111,6 +113,7 @@ Commands:
   lover model rm <v>    remove one model version's cache; needs --yes
   lover doctor          report what is missing, changing nothing
   lover demo            generate a self-contained report using embedded sample data
+  lover pull            automatically extract latest records via sidecar and sync
 
 Every command takes -h for its own flags. The analysis itself is internal/app's,
 shared with the analyze command: this binary owns starting services and
