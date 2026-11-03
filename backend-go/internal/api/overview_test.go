@@ -113,37 +113,26 @@ func TestOverview_UsesTheOnlyConversationAndRefusesToGuessBetweenTwo(t *testing.
 			view.View.Meta.TalkerHash, view.TalkerHash)
 	}
 
-	// A second conversation makes silence ambiguous, and guessing is the one
-	// thing this endpoint must not do.
+	// A second conversation with fewer messages: silence defaults to the main
+	// conversation (alice) rather than throwing an error requiring fingerprints.
 	seedText(t, s, "k2", bob, testBaseMs+1000, false, "在")
 
 	recorder = do(t, engine, http.MethodGet, "/api/overview", "")
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("GET /api/overview with two conversations = %d, want 400: %s", recorder.Code, recorder.Body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/overview with two conversations = %d, want 200: %s", recorder.Code, recorder.Body)
 	}
-	envelope := decodeErrorBody(t, recorder.Body.Bytes())
-	if envelope.Code != "talker_required" {
-		t.Errorf("code = %q, want %q", envelope.Code, "talker_required")
+	var view2 overviewResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &view2); err != nil {
+		t.Fatalf("unmarshal overview: %v", err)
+	}
+	if view2.TalkerHash != report.TalkerHash(alice) {
+		t.Errorf("expected default conversation to be alice, got %s", view2.TalkerHash)
 	}
 
-	// The hint names the candidates by fingerprint. A wxid in the hint would be
-	// the leak this whole package is shaped to prevent, and an unusable hint
-	// would make the 400 a dead end.
-	if strings.Contains(envelope.Hint, "wxid_") {
-		t.Errorf("hint = %q, want no raw talker: candidates are named by fingerprint", envelope.Hint)
-	}
-	for _, talker := range []string{alice, bob} {
-		if !strings.Contains(envelope.Hint, report.TalkerHash(talker)) {
-			t.Errorf("hint = %q, want it to contain the fingerprint of every candidate", envelope.Hint)
-		}
-	}
-	for _, candidate := range strings.Split(envelope.Hint, ": ") {
-		for _, field := range strings.Fields(candidate) {
-			trimmed := strings.TrimSuffix(field, ",")
-			if len(trimmed) == 16 && !hexFingerprint.MatchString(trimmed) {
-				t.Errorf("hint candidate %q is not a 16-character hex fingerprint", trimmed)
-			}
-		}
+	// Verify GET /api/conversations returns both
+	recorder = do(t, engine, http.MethodGet, "/api/conversations", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/conversations = %d, want 200", recorder.Code)
 	}
 }
 

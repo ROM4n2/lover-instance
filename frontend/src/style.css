@@ -42,10 +42,15 @@ body {
   margin: 0;
 }
 
-.brand .hash {
+.brand .partner-title {
   color: var(--muted);
   font-size: 12px;
-  font-family: ui-monospace, 'Cascadia Code', monospace;
+  margin-top: 2px;
+}
+
+.brand .partner-name {
+  color: var(--self);
+  font-weight: 600;
 }
 
 .tabs {

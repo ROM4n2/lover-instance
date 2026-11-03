@@ -3,19 +3,35 @@
     <header class="topbar">
       <div class="brand">
         <h1>聊天关系分析面板</h1>
-        <div v-if="overview && overview.talker_hash" class="hash">会话指纹 {{ overview.talker_hash }}</div>
+        <div v-if="currentConversation" class="partner-title">
+          伴侣：<span class="partner-name">{{ currentConversation.display_name }}</span>
+        </div>
       </div>
 
-      <label class="talker-field">
-        会话
-        <el-input
-          v-model="talkerInput"
+      <div class="talker-field">
+        <span class="field-label">分析会话：</span>
+        <el-select
+          v-if="conversations.length > 0"
+          v-model="selectedTalker"
           size="small"
-          placeholder="留空用默认会话"
-          style="width: 160px"
-          @keyup.enter="applyTalker"
-          @blur="applyTalker"
-        />
+          placeholder="选择聊天对象"
+          style="width: 200px"
+          @change="handleSelectConversation"
+        >
+          <el-option
+            v-for="item in conversations"
+            :key="item.talker"
+            :label="`${item.display_name} (${formatCount(item.message_count)}条)`"
+            :value="item.talker"
+          >
+            <span style="float: left">{{ item.display_name }}</span>
+            <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px">
+              {{ formatCount(item.message_count) }}条
+            </span>
+          </el-option>
+        </el-select>
+        <span v-else class="empty-hint">暂无会话</span>
+
         <el-button
           type="primary"
           plain
@@ -26,7 +42,7 @@
         >
           ⚡ 同步微信记录
         </el-button>
-      </label>
+      </div>
 
       <nav class="tabs">
         <button
@@ -59,7 +75,12 @@
         />
 
         <Overview v-if="view === 'overview'" :overview="overview" />
-        <HighlightsTimeline v-else-if="view === 'highlights'" :talker="talker" :overview="overview" />
+        <HighlightsTimeline
+          v-else-if="view === 'highlights'"
+          :talker="talker"
+          :overview="overview"
+          :partner-name="currentConversation ? currentConversation.display_name : ''"
+        />
         <Sentiment v-else-if="view === 'sentiment'" :overview="overview" :analysis="analysis" />
         <Jobs
           v-else-if="view === 'jobs'"
@@ -94,7 +115,43 @@ const tabs = [
 
 const view = ref('overview')
 const talker = ref('')
-const talkerInput = ref('')
+const selectedTalker = ref('')
+const conversations = ref([])
+
+const currentConversation = computed(() => {
+  return conversations.value.find(c => c.talker === talker.value) || null
+})
+
+function formatCount(num) {
+  if (!num) return '0'
+  return num >= 10000 ? (num / 10000).toFixed(1) + 'w' : num
+}
+
+async function loadConversations() {
+  try {
+    const res = await api.getConversations()
+    conversations.value = res.conversations || []
+    if (conversations.value.length > 0) {
+      if (!talker.value) {
+        const main = conversations.value.find(c => c.is_main) || conversations.value[0]
+        talker.value = main.talker
+        selectedTalker.value = main.talker
+        writeState({ view: view.value, talker: talker.value }, { push: false })
+      } else {
+        selectedTalker.value = talker.value
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load conversations:', err)
+  }
+}
+
+function handleSelectConversation(val) {
+  talker.value = val
+  selectedTalker.value = val
+  writeState({ view: view.value, talker: val }, { push: true })
+  loadOverview()
+}
 
 const health = ref(null)
 const overview = ref(null)
@@ -161,20 +218,10 @@ async function loadOverview({ silent = false } = {}) {
     overview.value = data
     if (data && data.talker_hash && !talker.value) {
       talker.value = data.talker_hash
-      talkerInput.value = data.talker_hash
       writeState({ view: view.value, talker: talker.value }, { push: false })
     }
     syncProgressPolling()
   } catch (error) {
-    if (error.code === 'talker_required' && !talker.value && error.hint) {
-      const match = error.hint.match(/\?talker=:\s*([a-f0-9]{16})/)
-      if (match && match[1]) {
-        talker.value = match[1]
-        talkerInput.value = match[1]
-        writeState({ view: view.value, talker: talker.value }, { push: false })
-        return loadOverview({ silent })
-      }
-    }
     if (!silent) overviewError.value = error
   }
 }
@@ -234,7 +281,7 @@ async function tickProgress() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadHealth(), loadOverview({ silent: true })])
+  await Promise.all([loadHealth(), loadConversations(), loadOverview({ silent: true })])
 }
 
 function switchView(next) {
@@ -242,33 +289,26 @@ function switchView(next) {
   writeState({ view: view.value, talker: talker.value }, { push: true })
 }
 
-function applyTalker() {
-  const value = (talkerInput.value || '').trim()
-  if (value === talker.value) return
-  talker.value = value
-  writeState({ view: view.value, talker: talker.value }, { push: true })
-  loadOverview()
-}
-
 function onPopState() {
   const state = readState()
   view.value = state.view
   talker.value = state.talker
-  talkerInput.value = state.talker
+  selectedTalker.value = state.talker
   loadOverview()
 }
 
-onMounted(() => {
+onMounted(async () => {
   const initial = readState()
   view.value = initial.view
   talker.value = initial.talker
-  talkerInput.value = initial.talker
+  if (initial.talker) {
+    selectedTalker.value = initial.talker
+  }
 
-  // Normalise the URL once so every load has a concrete ?view= and a bookmark
-  // lands on the same tab. replace, not push: this is not a navigation.
   writeState({ view: view.value, talker: talker.value }, { push: false })
 
   loadHealth()
+  await loadConversations()
   loadOverview()
   healthTimer = setInterval(loadHealth, HEALTH_INTERVAL)
   window.addEventListener('popstate', onPopState)

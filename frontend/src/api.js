@@ -85,6 +85,10 @@ export function syncSidecar(talker) {
   return request(`/sync-sidecar${query ? `?${query}` : ''}`, { method: 'POST' })
 }
 
+export function getConversations() {
+  return request('/conversations')
+}
+
 export async function uploadExport(file) {
   const form = new FormData()
   form.append('file', file)

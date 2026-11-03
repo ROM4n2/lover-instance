@@ -154,6 +154,29 @@ func importTalker(ctx context.Context, s *store.Store, source, talker string, ro
 		return Report{}, fmt.Errorf("ingest: %w", err)
 	}
 
+	var displayName string
+	for _, row := range rows {
+		if row.Extra != nil {
+			if cr, ok := row.Extra["chat_room"].(string); ok && cr != "" && cr != talker {
+				displayName = cr
+				break
+			}
+			if !row.IsSelf {
+				if s, ok := row.Extra["sender"].(string); ok && s != "" && s != talker {
+					displayName = s
+					break
+				}
+			}
+		}
+	}
+	if displayName != "" {
+		_ = s.SaveContact(ctx, store.Contact{
+			WxID:     talker,
+			Nickname: displayName,
+			IsSelf:   false,
+		})
+	}
+
 	return Report{
 		Inserted:      result.Inserted,
 		Skipped:       result.Skipped,

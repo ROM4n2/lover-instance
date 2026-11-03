@@ -129,6 +129,13 @@ func resolveTalker(ctx context.Context, requested string, s *store.Store) (strin
 				return t, nil
 			}
 		}
+		if convs, err := s.ListConversations(ctx); err == nil {
+			for _, c := range convs {
+				if c.DisplayName == requested || c.Talker == requested {
+					return c.Talker, nil
+				}
+			}
+		}
 		return "", fail(http.StatusNotFound, "unknown_talker",
 			"no conversation matches the requested talker or fingerprint",
 			"use a valid talker wxid or fingerprint")
@@ -142,13 +149,19 @@ func resolveTalker(ctx context.Context, requested string, s *store.Store) (strin
 	case 1:
 		return talkers[0], nil
 	default:
-		hashes := make([]string, 0, len(talkers))
-		for _, talker := range talkers {
-			hashes = append(hashes, report.TalkerHash(talker))
+		// Automatically select the main conversation with the most messages
+		convs, err := s.ListConversations(ctx)
+		if err == nil {
+			for _, c := range convs {
+				if c.IsMain {
+					return c.Talker, nil
+				}
+			}
+			if len(convs) > 0 {
+				return convs[0].Talker, nil
+			}
 		}
-		return "", fail(http.StatusBadRequest, "talker_required",
-			"this database holds more than one conversation, so a talker has to be named",
-			"use one of these fingerprints as ?talker=: "+strings.Join(hashes, ", "))
+		return talkers[0], nil
 	}
 }
 

@@ -55,7 +55,11 @@
     </section>
 
     <!-- 分享卡片弹窗 -->
-    <el-dialog v-model="showShareModal" title="📸 恋爱纪念海报 (3:4 高清壁纸)" width="500px" align-center @opened="renderCanvas">
+    <el-dialog v-model="showShareModal" title="📸 恋爱纪念海报 (3:4 高清壁纸)" width="520px" align-center @opened="renderCanvas">
+      <div style="margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 13px; color: #64748b; white-space: nowrap">海报标题：</span>
+        <el-input v-model="posterTitle" size="small" placeholder="输入海报标题" @input="renderCanvas" />
+      </div>
       <div class="card-preview-wrap">
         <canvas ref="canvasRef" width="1080" height="1440" class="share-canvas"></canvas>
       </div>
@@ -77,12 +81,22 @@ import * as api from '../api'
 const props = defineProps({
   talker: { type: String, default: '' },
   overview: { type: Object, default: null },
+  partnerName: { type: String, default: '' },
 })
 
 const loading = ref(false)
 const rawHighlights = ref(null)
 const showShareModal = ref(false)
 const canvasRef = ref(null)
+const posterTitle = ref('')
+
+watch(() => props.partnerName, (name) => {
+  if (name) {
+    posterTitle.value = `我和 ${name} 的恋爱记忆`
+  } else {
+    posterTitle.value = '我们的聊天恋爱记忆'
+  }
+}, { immediate: true })
 
 const highlights = computed(() => {
   if (rawHighlights.value && rawHighlights.value.present) {
@@ -173,7 +187,7 @@ function renderCanvas() {
   // Header Title
   ctx.fillStyle = '#ffffff'
   ctx.font = 'bold 44px -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif'
-  ctx.fillText('我们的聊天恋爱记忆', 540, 168)
+  ctx.fillText(posterTitle.value || '我们的聊天恋爱记忆', 540, 168)
 
   ctx.fillStyle = '#94a3b8'
   ctx.font = '20px sans-serif'

@@ -111,6 +111,7 @@ func New(opts Options) *gin.Engine {
 	apiGroup.POST("/scan-export", scanExportHandler(opts))
 	apiGroup.POST("/sync-sidecar", syncSidecarHandler(opts))
 	apiGroup.GET("/highlights", highlightsHandler(opts))
+	apiGroup.GET("/conversations", conversationsHandler(opts))
 
 	// Everything the API did not match is offered to the static dashboard,
 	// except /api itself. The check comes first and is the important part: an
