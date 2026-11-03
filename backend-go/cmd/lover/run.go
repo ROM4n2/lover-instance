@@ -230,15 +230,18 @@ func runFirstRun(ctx context.Context, args []string, stdout, stderr io.Writer, s
 		}
 	}
 
-	// 3. The export. Without one there is nothing to analyze, and the hint is the
-	//    shared one so both entry points say the same sentence.
+	// 3. The export. Without one there is nothing to analyze on an uninitialized
+	//    database, but an existing database can be re-analyzed without a new export.
 	if cfg.opts.ExportPath == "" {
 		path, err := latestExport(app.ExportsDir())
 		if err != nil {
-			fmt.Fprintf(stderr, "lover: %v\n", err)
-			return exitRun
+			if _, statErr := os.Stat(cfg.opts.DBPath); statErr != nil {
+				fmt.Fprintf(stderr, "lover: %v\n", err)
+				return exitRun
+			}
+		} else {
+			cfg.opts.ExportPath = path
 		}
-		cfg.opts.ExportPath = path
 	}
 
 	// 4. The analysis, in the shared layer.

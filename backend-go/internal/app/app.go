@@ -267,13 +267,17 @@ func execute(ctx context.Context, cfg Options, stderr io.Writer) (outcome, error
 	}
 
 	at := time.Now()
-	imported, err := importExport(ctx, s, cfg)
-	if err != nil {
-		return outcome{}, err
+	var imported ingest.Report
+	if cfg.ExportPath != "" || cfg.ExportReader != nil {
+		var err error
+		imported, err = importExport(ctx, s, cfg)
+		if err != nil {
+			return outcome{}, err
+		}
 	}
 	ingestMs := time.Since(at).Milliseconds()
 
-	talker, err := resolveTalker(imported, cfg.Talker)
+	talker, err := resolveTalker(ctx, s, imported, cfg.Talker)
 	if err != nil {
 		return outcome{}, err
 	}
@@ -382,7 +386,7 @@ func importExport(ctx context.Context, s *store.Store, cfg Options) (ingest.Repo
 // An export holding one conversation needs no flag, which is the common case;
 // more than one is a decision only the user can make, so it is refused with
 // the choices named rather than guessed at.
-func resolveTalker(imported ingest.Report, requested string) (string, error) {
+func resolveTalker(ctx context.Context, s *store.Store, imported ingest.Report, requested string) (string, error) {
 	if requested != "" {
 		return requested, nil
 	}
@@ -390,6 +394,10 @@ func resolveTalker(imported ingest.Report, requested string) (string, error) {
 	case 1:
 		return imported.Talkers[0], nil
 	case 0:
+		talkers, err := s.ListTalkers(ctx)
+		if err == nil && len(talkers) == 1 {
+			return talkers[0], nil
+		}
 		return "", fmt.Errorf("the export contained no conversation to analyze: %s", ExportJSONHint)
 	default:
 		return "", Usagef("the export holds %d conversations, so --talker is required; every conversation in it has been stored already, so re-running with --talker costs only the analysis, not the import", len(imported.Talkers))
