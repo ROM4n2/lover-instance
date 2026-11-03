@@ -66,6 +66,31 @@ func runPull(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 func findSidecar(root string, days int, talker, dataRoot string) (string, []string, error) {
+	// Priority 0: Same folder as the running lover executable or current directory
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "chatlog-keeper.exe")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			args := []string{"wechat", "--lover", fmt.Sprintf("--days=%d", days)}
+			if talker != "" {
+				args = append(args, "--conversation", talker)
+			}
+			if dataRoot != "" {
+				args = append(args, "--data-root", dataRoot)
+			}
+			return candidate, args, nil
+		}
+	}
+	if info, err := os.Stat("./chatlog-keeper.exe"); err == nil && !info.IsDir() {
+		args := []string{"wechat", "--lover", fmt.Sprintf("--days=%d", days)}
+		if talker != "" {
+			args = append(args, "--conversation", talker)
+		}
+		if dataRoot != "" {
+			args = append(args, "--data-root", dataRoot)
+		}
+		return "./chatlog-keeper.exe", args, nil
+	}
+
 	// Priority 1: Sibling repository chatlog-keeper (Python module)
 	siblingRepo := filepath.Join(filepath.Dir(root), "chatlog-keeper")
 	if info, err := os.Stat(siblingRepo); err == nil && info.IsDir() {
@@ -92,5 +117,5 @@ func findSidecar(root string, days int, talker, dataRoot string) (string, []stri
 		return path, args, nil
 	}
 
-	return "", nil, fmt.Errorf("no chatlog-keeper sidecar found; clone ROM4n2/chatlog-keeper as sibling folder or install chatlog-keeper on PATH")
+	return "", nil, fmt.Errorf("no chatlog-keeper sidecar found; download chatlog-keeper.exe and put it in the same folder as lover.exe")
 }

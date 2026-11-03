@@ -75,7 +75,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import * as api from './api'
 import { normalizeView, readState, writeState } from './useUrlState'
 import HealthBadge from './components/HealthBadge.vue'
@@ -108,7 +108,23 @@ async function handleSyncSidecar() {
     ElMessage.success(`同步完成！解析 ${res.parsed || 0} 条消息，新增 ${res.inserted || 0} 条`)
     await refreshAll()
   } catch (err) {
-    ElMessage.error(err.message || '微信同步失败：请确保电脑已登录微信')
+    if (err.code === 'sidecar_missing') {
+      ElMessageBox.alert(
+        '<div style=\"line-height: 1.6\">' +
+        '依据本地隐私安全规范，微信数据提取需由独立的本地小助手完成：<br><br>' +
+        '<b>1.</b> 从 Releases 下载独立助手 <code>chatlog-keeper.exe</code><br>' +
+        '<b>2.</b> 将它放入与 <code>lover.exe</code> <b>相同的文件夹</b><br>' +
+        '<b>3.</b> 电脑登录微信，再次点击【⚡ 同步微信记录】即可全自动同步！</div>',
+        '💡 微信提取助手未就绪',
+        {
+          dangerouslyUseHTMLString: true,
+          confirmButtonText: '我知道了',
+          type: 'info'
+        }
+      )
+    } else {
+      ElMessage.error(err.message || '微信同步失败：请确保电脑已登录微信')
+    }
   } finally {
     syncing.value = false
   }

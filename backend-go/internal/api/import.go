@@ -180,33 +180,52 @@ func isCandidateExport(path string) bool {
 	return strings.Contains(prefix, "conversation_id") || strings.Contains(prefix, "msg_type") || strings.Contains(prefix, "sender")
 }
 
+func findSidecarBin() (string, []string, error) {
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "chatlog-keeper.exe")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil, nil
+		}
+	}
+	if info, err := os.Stat("./chatlog-keeper.exe"); err == nil && !info.IsDir() {
+		return "./chatlog-keeper.exe", nil, nil
+	}
+	if root, err := filepath.Abs("."); err == nil {
+		sibling := filepath.Join(filepath.Dir(root), "chatlog-keeper")
+		if info, err := os.Stat(sibling); err == nil && info.IsDir() {
+			python := "python3"
+			if p := os.Getenv("LOVER_PYTHON"); p != "" {
+				python = p
+			}
+			return python, []string{"-m", "chatlog_keeper.cli"}, nil
+		}
+	}
+	if path, err := exec.LookPath("chatlog-keeper"); err == nil {
+		return path, nil, nil
+	}
+	return "", nil, os.ErrNotExist
+}
+
 func syncSidecarHandler(opts Options) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 		talker, _ := resolveTalker(ctx, c.Query("talker"), opts.Store)
 
-		python := "python3"
-		if p := os.Getenv("LOVER_PYTHON"); p != "" {
-			python = p
+		bin, baseArgs, err := findSidecarBin()
+		if err != nil {
+			writeError(c, http.StatusNotFound, "sidecar_missing",
+				"未检测到微信提取助手 (chatlog-keeper.exe)",
+				"请下载 chatlog-keeper.exe，放入与 lover.exe 相同的文件夹后重试。")
+			return
 		}
 
-		args := []string{"-m", "chatlog_keeper.cli", "wechat", "--lover", "--days=30"}
+		args := append(baseArgs, "wechat", "--lover", "--days=30")
 		if talker != "" {
 			args = append(args, "--conversation", talker)
 		}
 
-		cmd := exec.CommandContext(ctx, python, args...)
+		cmd := exec.CommandContext(ctx, bin, args...)
 		out, err := cmd.CombinedOutput()
-		if err != nil {
-			if path, lookErr := exec.LookPath("chatlog-keeper"); lookErr == nil {
-				cmd = exec.CommandContext(ctx, path, "wechat", "--lover", "--days=30")
-				if talker != "" {
-					cmd.Args = append(cmd.Args, "--conversation", talker)
-				}
-				out, err = cmd.CombinedOutput()
-			}
-		}
-
 		if err != nil {
 			writeError(c, http.StatusInternalServerError, "sidecar_failed",
 				"微信聊天记录自动导出失败（请确保电脑已登录微信）", string(out))
